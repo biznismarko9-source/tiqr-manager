@@ -1,12 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  ArtworkBackfillReport,
-  ArtworkDecideInput,
-  ArtworkImage,
-  ArtworkOptions,
-  ArtworkRef,
-  ArtworkSuggestInput,
-  ArtworkSuggestion,
   DataCheck,
   Note,
   NoteBlock,
@@ -179,14 +172,6 @@ export const api = {
   takeCrashReport: () => invoke<string | null>("take_crash_report"),
   exportDiagnostics: () => invoke<string>("export_diagnostics"),
   saveDiagnostics: (path: string) => invoke<void>("save_diagnostics", { path }),
-  // 2.116.0: a picture for every event (commands/event_artwork.rs).
-  eventArtworkMap: () => invoke<ArtworkRef[]>("event_artwork_map"),
-  eventArtworkImages: (keys: string[]) => invoke<ArtworkImage[]>("event_artwork_images", { keys }),
-  eventArtworkSuggest: (input: ArtworkSuggestInput) => invoke<ArtworkSuggestion>("event_artwork_suggest", { input }),
-  eventArtworkDecide: (input: ArtworkDecideInput) => invoke<void>("event_artwork_decide", { input }),
-  eventArtworkBackfill: (max?: number) => invoke<ArtworkBackfillReport>("event_artwork_backfill", { max }),
-  getEventArtworkOptions: () => invoke<ArtworkOptions>("get_event_artwork_options"),
-  setEventArtworkOptions: (options: ArtworkOptions) => invoke<ArtworkOptions>("set_event_artwork_options", { options }),
 
   // AI Import Assistant (2.7.0)
   /** The ONLY AI-import call in the app. Analyzes one user-provided image and

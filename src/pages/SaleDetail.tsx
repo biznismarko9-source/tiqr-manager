@@ -36,7 +36,6 @@ import { useNarrowTables } from "../lib/useNarrowTables";
 import { completionStatus } from "../lib/completion";
 import { DELIVERY_STATUS_OPTIONS, RESALE_STATUS_OPTIONS } from "./Tickets";
 import { SendToDiscordButton } from "../components/Discord";
-import { EventArt } from "../components/EventArt";
 import { quietly } from "../lib/diagnostics";
 
 // 2.0.69: the only 2 payment statuses this page's inline Payout-status edit
@@ -241,11 +240,7 @@ export default function SaleDetail() {
       </Link>
 
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        {/* 2.116.0: the picture of the event sold - the placeholder for a
-            sale that spans several events. */}
-        <div className="flex min-w-0 items-start gap-3.5">
-        <EventArt eventId={header.eventId} name={header.eventName ?? "Mixed events"} size="md" />
-        <div className="min-w-0">
+        <div>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{header.code}</h1>
             {header.paymentStatus ? (
@@ -277,7 +272,6 @@ export default function SaleDetail() {
             {" "}&middot; {lines.length} ticket{lines.length === 1 ? "" : "s"}
             {header.saleDate && ` · sold ${formatDate(header.saleDate)}`}
           </p>
-        </div>
         </div>
         <div className="flex gap-2">
           {/* 2.113.0: one message for the whole sale - any of its lines

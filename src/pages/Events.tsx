@@ -31,9 +31,6 @@ import { useToast } from "../lib/toast";
 import { useListTab } from "../lib/useListTab";
 import { markRow, takeRow } from "../lib/lastRow";
 import { useNarrowTables } from "../lib/useNarrowTables";
-import { EventArt } from "../components/EventArt";
-import { ArtworkPicker, type ArtworkChoice } from "../components/ArtworkPicker";
-import { refreshArtwork } from "../lib/eventArtwork";
 import { reportError, quietly } from "../lib/diagnostics";
 
 // 2.0.59: "Upcoming" vs "Completed" tabs (marko's request - see
@@ -225,7 +222,6 @@ export default function Events() {
       setConfirmBulkDelete(false);
       exitSelectionMode();
       load();
-      refreshArtwork();
     } catch (e) {
       toast.error(errMsg(e));
     } finally {
@@ -255,8 +251,6 @@ export default function Events() {
       }
       setConfirmDetectCategories(false);
       load();
-      // A category decides which picture service is asked.
-      refreshArtwork();
     } catch (e) {
       toast.error(errMsg(e));
     } finally {
@@ -606,38 +600,29 @@ export default function Events() {
                     </td>
                   )}
                   <td className={isNarrow ? "td-c-narrow" : "td-c"}>
-                    {/* 2.116.0: the event's picture - the same one every
-                        other screen shows for it (components/EventArt.tsx).
-                        40px fits the two lines beside it, so rows keep their
-                        height. */}
-                    <div className="flex items-center gap-2.5">
-                      <EventArt eventId={ev.id} name={ev.name} size="sm" className="-my-0.5" />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5">
-                          <Link
-                            to={`/events/${ev.id}`}
-                            onClick={() => markRow("events", ev.id)}
-                            title={ev.name}
-                            className="truncate font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
-                          >
-                            {ev.name}
-                          </Link>
-                          {/* 2.0.27: category color-coding, staying "in theme" -
-                              same pill idiom as every status Badge on this page,
-                              just keyed by a fixed per-category palette instead
-                              of a status string. Only shown once category is
-                              actually set - most events won't have one at first. */}
-                          {ev.category && ev.categoryColorSlot !== null && (
-                            <span className="shrink-0">
-                              <EventCategoryBadge name={ev.category} colorSlot={ev.categoryColorSlot} />
-                            </span>
-                          )}
-                        </div>
-                        <p className="truncate text-xs text-slate-500 dark:text-slate-400">
-                          {[ev.venue, ev.city].filter(Boolean).join(", ")}
-                        </p>
-                      </div>
+                    <div className="flex items-center gap-1.5">
+                      <Link
+                        to={`/events/${ev.id}`}
+                        onClick={() => markRow("events", ev.id)}
+                        title={ev.name}
+                        className="truncate font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
+                      >
+                        {ev.name}
+                      </Link>
+                      {/* 2.0.27: category color-coding, staying "in theme" -
+                          same pill idiom as every status Badge on this page,
+                          just keyed by a fixed per-category palette instead
+                          of a status string. Only shown once category is
+                          actually set - most events won't have one at first. */}
+                      {ev.category && ev.categoryColorSlot !== null && (
+                        <span className="shrink-0">
+                          <EventCategoryBadge name={ev.category} colorSlot={ev.categoryColorSlot} />
+                        </span>
+                      )}
                     </div>
+                    <p className="truncate text-xs text-slate-500 dark:text-slate-400">
+                      {[ev.venue, ev.city].filter(Boolean).join(", ")}
+                    </p>
                   </td>
                   {/* 2.90.0: the date carries its own day line - EVENTS-LAB
                       design 01 ("The Table"), the settled one. The register
@@ -681,7 +666,6 @@ export default function Events() {
         onCreated={() => {
           setModalOpen(false);
           load();
-          refreshArtwork();
         }}
       />
 
@@ -729,15 +713,9 @@ export function EventFormModal({
   const [categories, setCategories] = useState<EventCategory[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // 2.116.0: a picture chosen here is stored when the form saves - and not
-  // at all if it is cancelled.
-  const [artChoices, setArtChoices] = useState<Record<string, ArtworkChoice>>({});
-  const [artSubject, setArtSubject] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
-      setArtChoices({});
-      setArtSubject(null);
       api.listEventCategories().then(setCategories).catch((e) => reportError("event form: categories", e, { severity: "warning" }));
       setForm(
         initial
@@ -758,23 +736,6 @@ export function EventFormModal({
     }
   }, [open, initial]);
 
-  /** The picture choices made in this form. The event is already saved
-   *  when this runs; a picture that cannot be stored is said, never allowed
-   *  to undo that. */
-  const saveArtChoices = async () => {
-    // Only the choice for the name being saved - one made for a name typed
-    // before it would change the picture of other events of that name.
-    const c = artSubject ? artChoices[artSubject] : undefined;
-    if (c) {
-      try {
-        await api.eventArtworkDecide(c.decide);
-      } catch (e) {
-        reportError("event form: save the picture", e);
-        toast.error(`The event was saved, but its picture was not: ${errMsg(e)}`);
-      }
-    }
-  };
-
   const submit = async () => {
     if (!form.name.trim()) {
       setError("Event name is required");
@@ -785,16 +746,13 @@ export function EventFormModal({
     try {
       if (initial) {
         await api.updateEvent(initial.id, form);
-        await saveArtChoices();
         toast.success("Event updated");
         onSaved(initial.id);
       } else {
         const created = await api.createEvent(form);
-        await saveArtChoices();
         toast.success("Event created");
         onSaved(created.id);
       }
-      refreshArtwork();
     } catch (e) {
       setError(errMsg(e));
     } finally {
@@ -863,26 +821,6 @@ export function EventFormModal({
           <Field label="Event name" required>
             <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} autoFocus />
           </Field>
-        </div>
-        {/* 2.116.0: the event's picture, looked for as the name is typed -
-            never holding up the save (components/ArtworkPicker.tsx). */}
-        <div className="col-span-2">
-          <ArtworkPicker
-            mode="deferred"
-            eventId={initial?.id ?? null}
-            name={form.name}
-            categoryId={form.categoryId ?? null}
-            choices={artChoices}
-            onChoice={(key, c) =>
-              setArtChoices((prev) => {
-                const next = { ...prev };
-                if (c) next[key] = c;
-                else delete next[key];
-                return next;
-              })
-            }
-            onSubject={setArtSubject}
-          />
         </div>
         <LookupSelect
           label="Category"

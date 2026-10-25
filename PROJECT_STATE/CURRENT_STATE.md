@@ -17,9 +17,8 @@ TIQR Manager - a local-first, offline-by-default desktop app (Tauri 2 +
 React/TypeScript frontend, Rust + SQLite backend) for ticket resellers.
 No server of its own; the only outbound calls are the user's own machine
 talking directly to Google Sheets, Firebase Auth, an FX-rate API, (for
-Price Checker) marketplace pages the user opens, and - since 2.116.0, for
-event pictures, switchable - Deezer's and Wikipedia's public APIs, sent an
-event's name and nothing else. Since 2.112.0, live
+Price Checker) marketplace pages the user opens. (2.116.0's event pictures
+also asked Deezer and Wikipedia; 2.116.1 removed them.) Since 2.112.0, live
 sync between marko's computers also goes through Firestore, under the
 signed-in account's own `users/{uid}` (opt-in per computer). Since 2.115.0,
 while both computers run, one reads Gmail and forwards what it stored to
@@ -28,7 +27,7 @@ once stored.
 
 ## Version
 
-**2.116.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.116.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, and - in the release zip, no longer in the
 repository since 2.113.0 (see `RELEASE.md`) - `release.ps1`'s `$Version` and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
@@ -2654,7 +2653,38 @@ itself before this release and still is not.
 
 ## Current focus / most recent work
 
-**2.116.0 - a picture for every event; a stability and diagnostics pass**
+**2.116.1 - the event pictures removed again** (report:
+`history/REDESIGN-2.116.1-REPORT.md`; marko: "tie fotky odstran kompletne",
+"tie pri events atd"):
+* Gone: `commands/event_artwork.rs` and its seven commands, `lib/
+  artworkStore.ts` (+ test), `lib/eventArtwork.ts`, `components/EventArt.tsx`,
+  `components/ArtworkPicker.tsx`, `IconImage`, the Artwork* types and API
+  calls, the Settings -> Integrations -> Event pictures card, the background
+  search in `Layout.tsx`, and the pictures on Events, EventDetail,
+  EventRowsModal, Orders, OrderDetail, Sales, SaleDetail and the Dashboard -
+  those files are back to their 2.115.1 form apart from 2.116.0's error
+  reporting (`quietly`, `reportError`). `mail_view::fetch_remote_image` is
+  back to its 2.115.1 form too.
+* Migration **048** (`048_remove_event_artwork.sql`): drops `artwork_lookups`;
+  drops `event_artworks`' triggers (its own two and live sync's three), then
+  empties it; clears its rows from `sync_outbox`, `sync_row_meta`,
+  `sync_uid_alias`, `sync_pending`, `deleted_rows`, and the
+  `event_artwork_auto` setting. The empty table stays for a 2.116.0
+  computer's Drive merge (PROTECTED_AREAS 2.116.1). `event_artworks` is out of
+  MERGE_TABLES and `UID_TABLES`; `live_sync::RETIRED_TABLES` sets aside what a
+  2.116.0 computer still sends. Migrations: 48 numbered ones, next is **049**.
+* Kept from 2.116.0: `diag.rs` (minus its picture counts), ErrorBoundary,
+  diagnostics, atomic migrations, the Escape handler, the async Detect
+  categories, the Discord date fix.
+* The desktop shortcut arrow is Windows' own overlay, not in the logo. The
+  release zip carries `SIPKY-NA-PLOCHE\SKRYT-SIPKY.bat` / `VRATIT-SIPKY.bat`
+  (outside the repository): HKLM `Explorer\Shell Icons` value 29 pointed at a
+  16x16 fully transparent icon in `%ProgramData%\TIQR-Manager`, or removed.
+  It applies to every shortcut on that PC and needs admin rights and a
+  restart.
+
+**2.116.0 - a picture for every event (removed in 2.116.1); a stability and
+diagnostics pass**
 (report: `history/REDESIGN-2.116.0-REPORT.md`; asked in English as "Smart
 Event Artwork + Full Stability & Reliability Audit"):
 * `commands/event_artwork.rs` + migration 047. Three things kept apart: the

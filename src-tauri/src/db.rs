@@ -313,6 +313,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "047_event_artwork",
         include_str!("../migrations/047_event_artwork.sql"),
     ),
+    // 2.116.1: the event pictures removed again, with what they had stored.
+    // 047 stays above: a file that already has it must keep finding it here.
+    (
+        "048_remove_event_artwork",
+        include_str!("../migrations/048_remove_event_artwork.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.
@@ -395,9 +401,6 @@ fn is_bookkeeping_table(table: &str) -> bool {
             | "sync_row_meta"
             | "sync_uid_alias"
             | "sync_pending"
-            // 2.116.0: what a picture service answered (migration 047). An
-            // answer arriving is not something marko changed.
-            | "artwork_lookups"
     )
 }
 
@@ -407,7 +410,7 @@ fn is_bookkeeping_table(table: &str) -> bool {
 /// the other machine (mail_store.rs), and a message arriving every second
 /// during a long first sync would otherwise keep the cloud copy permanently
 /// "changed" and push the whole main file over and over.
-pub(crate) fn counts_as_user_change(db: &str, table: &str) -> bool {
+fn counts_as_user_change(db: &str, table: &str) -> bool {
     db != "mail" && !is_bookkeeping_table(table)
 }
 
@@ -1709,7 +1712,6 @@ mod row_uid_tests {
     /// never syncs.
     const UID_TABLES: &[&str] = &[
         "events",
-        "event_artworks",
         "orders",
         "tickets",
         "sales",
@@ -1857,14 +1859,76 @@ mod migration_atomicity_tests {
         assert!(exists(&conn, "t901"));
     }
 
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    /// 2.116.1: a file 2.116.0 used - pictures found and chosen, live sync
+    /// holding some of them - loses every picture and nothing else.
     #[test]
-    fn the_artwork_migration_can_run_again_over_itself() {
-        // Every statement in 047 is IF NOT EXISTS: a second run (the file
-        // replayed by hand, or a restore of a copy that has it) changes
-        // nothing and fails on nothing.
+    fn removing_the_pictures_takes_what_they_stored_and_nothing_else() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::register_functions(&conn).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::mail_store::attach_in_memory(&conn).unwrap();
+        let upto_047 = super::MIGRATIONS.iter().position(|(v, _)| *v == "047_event_artwork").unwrap();
+        apply_migrations(&conn, &super::MIGRATIONS[..=upto_047]).unwrap();
+        // The live sync triggers 2.116.0 had put on the table.
+        conn.execute_batch(
+            "CREATE TRIGGER event_artworks_live_sync_ins AFTER INSERT ON event_artworks BEGIN
+                 INSERT OR REPLACE INTO sync_outbox (table_name, row_id, uid, op, hlc, queued_at)
+                 VALUES ('event_artworks', NEW.id, NEW.uid, 'upsert', 1, 'now'); END;
+             CREATE TRIGGER event_artworks_live_sync_upd AFTER UPDATE ON event_artworks BEGIN SELECT 1; END;
+             CREATE TRIGGER event_artworks_live_sync_del AFTER DELETE ON event_artworks BEGIN
+                 INSERT OR REPLACE INTO sync_outbox (table_name, row_id, uid, op, hlc, queued_at)
+                 VALUES ('event_artworks', OLD.id, OLD.uid, 'delete', 2, 'now'); END;",
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO events (name) VALUES ('Coldplay');
+             INSERT INTO event_artworks (uid, identity_key, label, state, image, source)
+             VALUES ('a1', 'name:coldplay', 'Coldplay', 'set', 'data:image/png;base64,AAAA', 'upload');
+             INSERT INTO artwork_lookups (query_key, outcome, image, checked_at)
+             VALUES ('artist:coldplay', 'match', 'data:image/jpeg;base64,BBBB', '2026-10-25T10:00:00.000Z');
+             INSERT INTO sync_outbox (table_name, row_id, uid, op, hlc, queued_at)
+             VALUES ('events', 1, (SELECT uid FROM events), 'upsert', 3, 'now');
+             INSERT INTO sync_row_meta (table_name, uid, hlc) VALUES ('event_artworks', 'a1', 1), ('events', 'e1', 1);
+             INSERT INTO sync_uid_alias (table_name, remote_uid, local_id) VALUES ('event_artworks', 'b1', 1);
+             INSERT INTO sync_pending (doc_id, body, received_at) VALUES ('event_artworks~b2', '{\"t\":\"event_artworks\"}', 'now');
+             INSERT INTO deleted_rows (table_name, uid) VALUES ('event_artworks', 'old');
+             INSERT INTO app_settings (key, value) VALUES ('event_artwork_auto', '0'), ('kept_setting', 'yes');",
+        )
+        .unwrap();
+
+        super::run_migrations(&conn).unwrap();
+
+        assert!(!exists(&conn, "artwork_lookups"));
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM event_artworks"), 0);
+        // Kept, empty, with the column a 2.116.0 merge matches rows by.
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM pragma_table_info('event_artworks') WHERE name = 'uid'"), 1);
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'event_artworks'"),
+            0,
+            "no trigger is left to queue or tombstone anything"
+        );
+        for table in ["sync_outbox", "sync_row_meta", "sync_uid_alias", "deleted_rows"] {
+            assert_eq!(count(&conn, &format!("SELECT COUNT(*) FROM {table} WHERE table_name = 'event_artworks'")), 0, "{table}");
+        }
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM sync_pending"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM app_settings WHERE key = 'event_artwork_auto'"), 0);
+
+        // Everything else as it was.
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM events WHERE name = 'Coldplay'"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM sync_outbox WHERE table_name = 'events'"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM sync_row_meta WHERE table_name = 'events'"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM app_settings WHERE key = 'kept_setting'"), 1);
+    }
+
+    #[test]
+    fn a_new_file_ends_without_the_picture_tables_but_the_empty_one() {
         let conn = super::test_conn();
-        conn.execute_batch(include_str!("../migrations/047_event_artwork.sql")).unwrap();
+        assert!(!exists(&conn, "artwork_lookups"));
         assert!(exists(&conn, "event_artworks"));
-        assert!(exists(&conn, "artwork_lookups"));
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM event_artworks"), 0);
     }
 }

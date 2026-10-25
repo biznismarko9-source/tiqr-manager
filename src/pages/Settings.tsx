@@ -5,7 +5,6 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { api, errMsg } from "../lib/api";
-import { nudgeArtworkSearch } from "../lib/eventArtwork";
 import { copyText } from "../lib/clipboard";
 import {
   type CloudSyncStatus,
@@ -1846,12 +1845,6 @@ export default function Settings() {
                 <AnthropicApiKeyCard />
               </SettingsGroup>
 
-              {/* 2.116.0: pictures for events (commands/event_artwork.rs) -
-                  two free services, no key, and the switch is per computer. */}
-              <SettingsGroup title="Event pictures" hint="Free. A picture for every event, from Deezer and Wikipedia.">
-                <EventPicturesCard />
-              </SettingsGroup>
-
               {/* 2.99.0: its own group - it is a separate service with its
                   own credentials, not part of the Google block or the key
                   above. See DiscordCard's own comment for why its settings
@@ -2607,57 +2600,6 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
 // Console's own Billing page. Same "never fabricate what can't be reliably
 // computed" rule this app already follows elsewhere (see PROTECTED_AREAS.md
 // 2.2.8's own attention-center categories).
-/** 2.116.0: the one switch for event pictures, and what it means. */
-function EventPicturesCard() {
-  const toast = useToast();
-  const [auto, setAuto] = useState<boolean | null>(null);
-  const [saving, setSaving] = useState(false);
-  useEffect(() => {
-    api
-      .getEventArtworkOptions()
-      .then((o) => setAuto(o.auto))
-      .catch((e) => toast.error(errMsg(e)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  const flip = async (on: boolean) => {
-    setSaving(true);
-    try {
-      const o = await api.setEventArtworkOptions({ auto: on });
-      setAuto(o.auto);
-      if (o.auto) nudgeArtworkSearch();
-    } catch (e) {
-      toast.error(errMsg(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <Card className="p-5">
-      <label className="flex items-start gap-3">
-        <input
-          type="checkbox"
-          className={CHECKBOX_CLASS}
-          checked={auto ?? false}
-          disabled={auto === null || saving}
-          onChange={(e) => void flip(e.target.checked)}
-        />
-        <span>
-          <span className="block text-sm font-medium text-slate-800 dark:text-slate-200">
-            Find pictures for events automatically
-          </span>
-          <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
-            Looks for the artist's or the team's picture as an event is typed, and - a few at a time - for events
-            that have none. Only the event's name is sent, to Deezer (music) and Wikipedia (teams, competitions,
-            festivals, shows). A picture is used on its own only when TIQR is sure it is the right one; a likely
-            one waits for your yes on the event's page. Pictures chosen by hand show on your other computer too.
-            Off: nothing is looked for unless you press Search on an event.
-          </span>
-        </span>
-      </label>
-    </Card>
-  );
-}
-
 function AnthropicApiKeyCard() {
   const toast = useToast();
   const [configured, setConfigured] = useState<boolean | null>(null);
@@ -4796,26 +4738,6 @@ const GUIDE_ESSENTIALS = [
   },
 ];
 
-/** 2.23.0: Settings -> Support. Two things marko asked for, in one card each.
- *
- * The guide is written for someone opening TIQR for the first time, in the
- * order the app actually wants to be used - it is not a feature list, and it
- * names the three things that are genuinely surprising (money is entered as a
- * decimal but stored to the cent, an order creates its tickets for you, and
- * sync is automatic once switched on).
- *
- * The suggestion box writes one document to Firestore and reads nothing back.
- * The rules (firestore.rules) let anyone signed in POST one and let nobody but
- * an admin read the collection, so a user can never see another user's note -
- * or even their own after sending it. That is deliberate: this is a postbox,
- * not a forum, and pretending otherwise would invite a reply that never comes.
- *
- * TWO MANUAL STEPS make this live, and nothing in the app can do either:
- * publish the rules in the Firebase Console, and set `admin: true` on marko's
- * own users/{uid} doc. Until then, sending fails with a permission error and
- * the inbox stays hidden - the safe way round, and the error below says so in
- * plain words rather than showing a raw Firebase code.
- */
 /** 2.116.0: what went wrong, in a form that is safe to send - built by the
  *  backend (src-tauri/src/diag.rs): counts and states, the last log lines and
  *  crash notes, with names, e-mail addresses, keys and record contents left
@@ -4873,6 +4795,26 @@ function DiagnosticsCard() {
   );
 }
 
+/** 2.23.0: Settings -> Support. Two things marko asked for, in one card each.
+ *
+ * The guide is written for someone opening TIQR for the first time, in the
+ * order the app actually wants to be used - it is not a feature list, and it
+ * names the three things that are genuinely surprising (money is entered as a
+ * decimal but stored to the cent, an order creates its tickets for you, and
+ * sync is automatic once switched on).
+ *
+ * The suggestion box writes one document to Firestore and reads nothing back.
+ * The rules (firestore.rules) let anyone signed in POST one and let nobody but
+ * an admin read the collection, so a user can never see another user's note -
+ * or even their own after sending it. That is deliberate: this is a postbox,
+ * not a forum, and pretending otherwise would invite a reply that never comes.
+ *
+ * TWO MANUAL STEPS make this live, and nothing in the app can do either:
+ * publish the rules in the Firebase Console, and set `admin: true` on marko's
+ * own users/{uid} doc. Until then, sending fails with a permission error and
+ * the inbox stays hidden - the safe way round, and the error below says so in
+ * plain words rather than showing a raw Firebase code.
+ */
 function SupportCards() {
   const toast = useToast();
   const { user, isAdmin } = useAuth();

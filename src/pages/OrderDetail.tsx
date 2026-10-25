@@ -59,7 +59,6 @@ import { orderCompletionChecks } from "./Orders";
 import { completionStatus } from "../lib/completion";
 import { PullReceivedFormModal } from "./Pulls";
 import { SendToDiscordButton } from "../components/Discord";
-import { EventArt } from "../components/EventArt";
 import { quietly } from "../lib/diagnostics";
 
 // 2.0.69: the 3 real statuses a ticket can freely move between outside of a
@@ -211,11 +210,7 @@ export default function OrderDetail() {
       </Link>
 
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        {/* 2.116.0: the picture of the event this order is for - chosen on
-            the Events page, only shown here. */}
-        <div className="flex min-w-0 items-start gap-3.5">
-        <EventArt eventId={order.eventId} name={order.eventName} size="md" />
-        <div className="min-w-0">
+        <div>
           <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">{detailLabel}</p>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{order.code}</h1>
@@ -241,7 +236,6 @@ export default function OrderDetail() {
             {order.eventName}
             {" "}&middot; purchased {formatDate(order.purchaseDate)}
           </p>
-        </div>
         </div>
         <div className="flex gap-2">
           {/* 2.65.0 - marko: *"z inventaru ked prekliknes order tak mas tam

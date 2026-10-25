@@ -15,7 +15,6 @@ import {
   type RowProblem,
 } from "../components/ui";
 import AiImportPanel from "../components/AiImportPanel";
-import { ArtworkPicker, RowArtwork, type ArtworkChoice } from "../components/ArtworkPicker";
 import { reportError } from "../lib/diagnostics";
 import { useToast } from "../lib/toast";
 
@@ -49,9 +48,6 @@ const STATUS_LABELS: Record<EventStatus, string> = {
 };
 
 type Row = {
-  /** 2.116.0: who the row is while it is typed - its picture choice must
-   *  stay with it when a row above is removed. */
-  id: number;
   name: string;
   eventDate: string;
   venue: string;
@@ -61,11 +57,8 @@ type Row = {
   status: EventStatus;
 };
 
-let nextRowId = 1;
-
 function blankRow(prev?: Row): Row {
   return {
-    id: nextRowId++,
     name: "",
     eventDate: "",
     venue: "",
@@ -107,11 +100,6 @@ export default function EventRowsModal({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-  // 2.116.0: pictures chosen while typing, by subject; which subject each
-  // row is now; and which row's picker is open.
-  const [artChoices, setArtChoices] = useState<Record<string, ArtworkChoice>>({});
-  const [rowSubjects, setRowSubjects] = useState<Record<number, string | null>>({});
-  const [artRow, setArtRow] = useState<number | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -125,9 +113,6 @@ export default function EventRowsModal({
     setRows([blankRow()]);
     setError(null);
     setSubmitted(false);
-    setArtChoices({});
-    setRowSubjects({});
-    setArtRow(null);
   }, [open]);
 
   const dated = useMemo(() => rows.filter((r) => r.eventDate).length, [rows]);
@@ -161,19 +146,6 @@ export default function EventRowsModal({
           notes: null,
         };
         made.push(await api.createEvent(input));
-      }
-      // 2.116.0: the pictures chosen for the rows that are still here - the
-      // events exist now, so a picture that cannot be stored is said, and
-      // never taken back with them.
-      const live = new Set(rows.map((r) => rowSubjects[r.id]).filter((k): k is string => !!k));
-      for (const [key, choice] of Object.entries(artChoices)) {
-        if (!live.has(key)) continue;
-        try {
-          await api.eventArtworkDecide(choice.decide);
-        } catch (e) {
-          reportError("new event: save the picture", e);
-          toast.error(`A picture could not be saved: ${errMsg(e)}`);
-        }
       }
       toast.success(
         made.length === 1 ? `Event ${made[0].name} created` : `${made.length} events created`,
@@ -220,23 +192,13 @@ export default function EventRowsModal({
       />
 
       <RowFormTable
-        head={["Picture", "Name", "Date", "Venue", "City", "Country", "Category", "Status"]}
+        head={["Name", "Date", "Venue", "City", "Country", "Category", "Status"]}
         onAdd={() => setRows((rs) => [...rs, blankRow(rs[rs.length - 1])])}
         addLabel="Add event"
       >
         {rows.map((r, i) => (
-          <tr key={r.id}>
+          <tr key={i}>
             <RowNumber n={i + 1} />
-            <td className="td-c w-[52px]">
-              <RowArtwork
-                name={r.name}
-                categoryId={r.categoryId === "" ? null : Number(r.categoryId)}
-                choices={artChoices}
-                active={artRow === r.id}
-                onToggle={() => setArtRow((cur) => (cur === r.id ? null : r.id))}
-                onSubject={(key) => setRowSubjects((prev) => (prev[r.id] === key ? prev : { ...prev, [r.id]: key }))}
-              />
-            </td>
             <td className="td-c w-[330px]">
               <Input
                 value={r.name}
@@ -294,40 +256,12 @@ export default function EventRowsModal({
               show={rows.length > 1}
               onRemove={() => setRows((rs) => rs.filter((_, k) => k !== i))}
               label={`Delete row ${i + 1}`}
-              onDuplicate={() =>
-                setRows((rs) => [...rs.slice(0, i + 1), { ...rs[i], id: nextRowId++, name: "" }, ...rs.slice(i + 1)])
-              }
+              onDuplicate={() => setRows((rs) => [...rs.slice(0, i + 1), { ...rs[i], name: "" }, ...rs.slice(i + 1)])}
               duplicateLabel={`Duplicate row ${i + 1}`}
             />
           </tr>
         ))}
       </RowFormTable>
-
-      {(() => {
-        const row = rows.find((r) => r.id === artRow);
-        if (!row || !row.name.trim()) return null;
-        return (
-          <div className="mt-3">
-            <p className="mb-1.5 text-xs font-medium text-slate-600 dark:text-slate-300">
-              Picture for row {rows.indexOf(row) + 1} - every row named the same gets it too
-            </p>
-            <ArtworkPicker
-              mode="deferred"
-              name={row.name}
-              categoryId={row.categoryId === "" ? null : Number(row.categoryId)}
-              choices={artChoices}
-              onChoice={(key, c) =>
-                setArtChoices((prev) => {
-                  const next = { ...prev };
-                  if (c) next[key] = c;
-                  else delete next[key];
-                  return next;
-                })
-              }
-            />
-          </div>
-        );
-      })()}
 
       <RowFormFooter
         error={error}

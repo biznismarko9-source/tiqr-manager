@@ -37,7 +37,6 @@ import {
 } from "../lib/liveSync";
 import { phaseLabel, phaseTone } from "../lib/liveSyncCore";
 import { closeMailShare, startMailShare } from "../lib/mailShare";
-import { startArtworkSearch, stopArtworkSearch } from "../lib/eventArtwork";
 import { useToast } from "../lib/toast";
 import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
@@ -245,8 +244,6 @@ export default function Layout() {
     // 2.115.0: beside it, in the same Firestore space - while both computers
     // run, one reads Gmail and sends the other the mail.
     const stopShare = startMailShare(uid);
-    // 2.116.0: pictures for events that have none, a few at a time.
-    startArtworkSearch();
     api
       .liveSyncStatus()
       .then((s) => {
@@ -258,7 +255,6 @@ export default function Layout() {
       off();
       stop();
       stopShare();
-      stopArtworkSearch();
     };
   }, [user?.email]);
   const [profileOpen, setProfileOpen] = useState(false);
