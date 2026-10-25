@@ -38,6 +38,8 @@ import { markRow, takeRow } from "../lib/lastRow";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import type { EventStatus, OrderRecord } from "../lib/types";
 import { completionStatus } from "../lib/completion";
+import { EventArt } from "../components/EventArt";
+import { quietly } from "../lib/diagnostics";
 
 // 2.0.66: the "Completed" indicator (see REDESIGN-2.0.66-REPORT.md). "Sold"
 // means nothing left in available/listed (a fully cancelled order counts as
@@ -216,8 +218,8 @@ export default function Orders() {
   }, [sortBy]);
 
   useEffect(() => {
-    api.listEventCategories().then(setCategories).catch(() => {});
-    api.listPlatforms().then(setPlatforms).catch(() => {});
+    api.listEventCategories().then(setCategories).catch(quietly("Orders: listEventCategories"));
+    api.listPlatforms().then(setPlatforms).catch(quietly("Orders: listPlatforms"));
   }, []);
 
   const load = () => {
@@ -623,7 +625,11 @@ export default function Orders() {
                         round; falls back to this table's existing
                         overflow-x-auto scroll at the extreme minimum, same
                         as that comment already documents for Event alone. */}
+                    {/* 2.116.0: the event's picture - 28px reaching into
+                        the cell's padding, so this dense list keeps its
+                        row height. */}
                     <div className="flex items-center gap-1.5">
+                      <EventArt eventId={o.eventId} name={o.eventName} size="row" className="mr-0.5" />
                       <span className="truncate">{o.eventName}</span>
                       {o.categoryName && o.categoryColorSlot !== null && (
                         <span className="shrink-0">
@@ -806,9 +812,9 @@ function OrderFormModal({
     api
       .listEvents()
       .then((all) => setEvents(all.filter((ev) => !isEventDone(ev))))
-      .catch(() => {});
-    api.listPlatforms().then(setPlatforms).catch(() => {});
-    api.listTicketTypes().then(setTicketTypeOptions).catch(() => {});
+      .catch(quietly("New order: list events"));
+    api.listPlatforms().then(setPlatforms).catch(quietly("Orders: listPlatforms"));
+    api.listTicketTypes().then(setTicketTypeOptions).catch(quietly("Orders: listTicketTypes"));
     setEventId(presetEventId ?? "");
     setPlatformId(null);
     setPurchaseDate(todayIso());

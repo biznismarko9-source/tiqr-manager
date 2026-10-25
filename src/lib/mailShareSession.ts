@@ -64,6 +64,7 @@ import {
   type ShareRole,
 } from "./mailShareCore.ts";
 import type { ShareBatch, ShareCursor, ShareImported, ShareInfo, ShareProgress, SharedMail } from "./types";
+import { quietly } from "./diagnostics";
 
 /** The Rust side - `api.mailShare*` in the app. */
 export interface MailShareBackend {
@@ -193,7 +194,7 @@ export class MailShareSession {
     this.unsubDrops?.();
     this.unsubCursors = this.unsubDrops = null;
     if (this.role === "reader") await this.handBack();
-    if (this.role === "follower") await this.deps.backend.mailShareFollow(false).catch(() => {});
+    if (this.role === "follower") await this.deps.backend.mailShareFollow(false).catch(quietly("mailShareSession: mailShareFollow"));
     this.role = "off";
     this.reader = null;
   }
@@ -204,7 +205,7 @@ export class MailShareSession {
     const ref = doc(this.col(), leaseId(this.account));
     await runTransaction(this.deps.db, async (tx) => {
       if (parseLease((await tx.get(ref)).data())?.dev === me) tx.delete(ref);
-    }).catch(() => {});
+    }).catch(quietly("mail sharing: hand back the lease"));
   }
 
   private schedule() {
@@ -275,7 +276,7 @@ export class MailShareSession {
 
   /** Not sharing: the reader reads Gmail here. */
   private async alone(role: "off" | "solo", detail: string | null, warn = false) {
-    if (this.role === "follower") await this.deps.backend.mailShareFollow(false).catch(() => {});
+    if (this.role === "follower") await this.deps.backend.mailShareFollow(false).catch(quietly("mailShareSession: mailShareFollow"));
     if (this.role === "reader") await this.handBack();
     this.unsubCursors?.();
     this.unsubDrops?.();
@@ -396,7 +397,7 @@ export class MailShareSession {
     await this.deps.backend.mailShareFollow(true);
     if (this.stopped) {
       // Closed meanwhile: this computer's reader must not stand by for nobody.
-      await this.deps.backend.mailShareFollow(false).catch(() => {});
+      await this.deps.backend.mailShareFollow(false).catch(quietly("mailShareSession: mailShareFollow"));
       return;
     }
     this.role = "follower";
@@ -452,7 +453,7 @@ export class MailShareSession {
 
   /** One after another; one that fails never holds up the next. */
   private enqueue(task: () => Promise<void>): Promise<void> {
-    this.storing = this.storing.then(task).catch(() => {});
+    this.storing = this.storing.then(task).catch(quietly("mail sharing: store a batch"));
     return this.storing;
   }
 
@@ -486,6 +487,6 @@ export class MailShareSession {
       this.setView({ detail: text, warn: true });
     }
     // Stored, or one that can never be: either way it does not stay in Firestore.
-    await deleteDoc(d.ref).catch(() => {});
+    await deleteDoc(d.ref).catch(quietly("mailShareSession: deleteDoc"));
   }
 }

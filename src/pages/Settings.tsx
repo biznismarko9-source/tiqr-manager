@@ -5,6 +5,8 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { api, errMsg } from "../lib/api";
+import { nudgeArtworkSearch } from "../lib/eventArtwork";
+import { copyText } from "../lib/clipboard";
 import {
   type CloudSyncStatus,
   type AppInfo,
@@ -90,6 +92,7 @@ import { checkForUpdate, getLastUpdateCheck, installUpdate, type Update, type Up
 import { UpdateOverlay } from "../components/UpdateOverlay";
 import { useAuth } from "../lib/auth";
 import { firebaseAuthErrorMessage } from "../lib/firebaseErrors";
+import { quietly } from "../lib/diagnostics";
 
 // 1.8.2: Settings Home - one card per category, each a real route
 // (settings/:section, added in App.tsx) rather than a scroll-to-anchor, so
@@ -452,7 +455,7 @@ export default function Settings() {
     api.listPlatforms().then(setPlatforms).catch((e) => toast.error(errMsg(e)));
     api.listEventCategories().then(setCategories).catch((e) => toast.error(errMsg(e)));
     api.listFinanceCategories().then(setFinanceCategories).catch((e) => toast.error(errMsg(e)));
-    api.getAppInfo().then(setAppInfo).catch(() => {});
+    api.getAppInfo().then(setAppInfo).catch(quietly("Settings: getAppInfo"));
   };
 
   useEffect(reload, []);
@@ -1843,6 +1846,12 @@ export default function Settings() {
                 <AnthropicApiKeyCard />
               </SettingsGroup>
 
+              {/* 2.116.0: pictures for events (commands/event_artwork.rs) -
+                  two free services, no key, and the switch is per computer. */}
+              <SettingsGroup title="Event pictures" hint="Free. A picture for every event, from Deezer and Wikipedia.">
+                <EventPicturesCard />
+              </SettingsGroup>
+
               {/* 2.99.0: its own group - it is a separate service with its
                   own credentials, not part of the Google block or the key
                   above. See DiscordCard's own comment for why its settings
@@ -2598,6 +2607,57 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
 // Console's own Billing page. Same "never fabricate what can't be reliably
 // computed" rule this app already follows elsewhere (see PROTECTED_AREAS.md
 // 2.2.8's own attention-center categories).
+/** 2.116.0: the one switch for event pictures, and what it means. */
+function EventPicturesCard() {
+  const toast = useToast();
+  const [auto, setAuto] = useState<boolean | null>(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    api
+      .getEventArtworkOptions()
+      .then((o) => setAuto(o.auto))
+      .catch((e) => toast.error(errMsg(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const flip = async (on: boolean) => {
+    setSaving(true);
+    try {
+      const o = await api.setEventArtworkOptions({ auto: on });
+      setAuto(o.auto);
+      if (o.auto) nudgeArtworkSearch();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Card className="p-5">
+      <label className="flex items-start gap-3">
+        <input
+          type="checkbox"
+          className={CHECKBOX_CLASS}
+          checked={auto ?? false}
+          disabled={auto === null || saving}
+          onChange={(e) => void flip(e.target.checked)}
+        />
+        <span>
+          <span className="block text-sm font-medium text-slate-800 dark:text-slate-200">
+            Find pictures for events automatically
+          </span>
+          <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
+            Looks for the artist's or the team's picture as an event is typed, and - a few at a time - for events
+            that have none. Only the event's name is sent, to Deezer (music) and Wikipedia (teams, competitions,
+            festivals, shows). A picture is used on its own only when TIQR is sure it is the right one; a likely
+            one waits for your yes on the event's page. Pictures chosen by hand show on your other computer too.
+            Off: nothing is looked for unless you press Search on an event.
+          </span>
+        </span>
+      </label>
+    </Card>
+  );
+}
+
 function AnthropicApiKeyCard() {
   const toast = useToast();
   const [configured, setConfigured] = useState<boolean | null>(null);
@@ -4073,7 +4133,7 @@ function DiscordCard() {
     setStatus(s);
     rememberDiscordStatus(s);
   };
-  const loadDeliveries = () => api.getDiscordDeliveries().then(setDeliveries).catch(() => {});
+  const loadDeliveries = () => api.getDiscordDeliveries().then(setDeliveries).catch(quietly("Settings: getDiscordDeliveries"));
 
   useEffect(() => {
     setLoading(true);
@@ -4756,6 +4816,63 @@ const GUIDE_ESSENTIALS = [
  * the inbox stays hidden - the safe way round, and the error below says so in
  * plain words rather than showing a raw Firebase code.
  */
+/** 2.116.0: what went wrong, in a form that is safe to send - built by the
+ *  backend (src-tauri/src/diag.rs): counts and states, the last log lines and
+ *  crash notes, with names, e-mail addresses, keys and record contents left
+ *  out. */
+function DiagnosticsCard() {
+  const toast = useToast();
+  const [busy, setBusy] = useState<"" | "copy" | "save">("");
+  const copy = async () => {
+    setBusy("copy");
+    try {
+      const text = await api.exportDiagnostics();
+      if (await copyText(text)) toast.success("Diagnostic report copied - paste it into a message to marko.");
+      else toast.error("The report could not be copied - use Save to a file instead.");
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy("");
+    }
+  };
+  const saveFile = async () => {
+    setBusy("save");
+    try {
+      const stamp = new Date().toISOString().slice(0, 10);
+      const path = await save({ defaultPath: `TIQR-diagnostics-${stamp}.txt`, filters: [{ name: "Text", extensions: ["txt"] }] });
+      if (!path) return;
+      await api.saveDiagnostics(path);
+      toast.success("Diagnostic report saved.");
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy("");
+    }
+  };
+  return (
+    <Card className="p-5">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Diagnostic report</h3>
+          <p className="mt-1 max-w-xl text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+            When something goes wrong, this is what to send. It holds the version, how many records there are,
+            the state of sync, and the last problems TIQR noted - never names, e-mail addresses, passwords, keys
+            or what your records say.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="secondary" disabled={busy !== ""} onClick={() => void copy()}>
+            {busy === "copy" ? <Spinner className="h-4 w-4" /> : "Copy report"}
+          </Button>
+          <Button variant="secondary" disabled={busy !== ""} onClick={() => void saveFile()}>
+            {busy === "save" ? <Spinner className="h-4 w-4" /> : "Save to a file"}
+          </Button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 function SupportCards() {
   const toast = useToast();
   const { user, isAdmin } = useAuth();
@@ -4884,6 +5001,8 @@ function SupportCards() {
           </dl>
         </div>
       </Card>
+
+      <DiagnosticsCard />
 
       <Card className="p-5">
         <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Suggest a change</h3>

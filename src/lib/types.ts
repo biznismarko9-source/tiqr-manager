@@ -3517,3 +3517,112 @@ export interface MailOverview {
   byCategory: MailCategoryCount[];
   recent: MailMessageSummary[];
 }
+
+// ---------------------------------------------------------------------------
+// 2.116.0 - a picture for every event (commands/event_artwork.rs).
+// ---------------------------------------------------------------------------
+
+/** Which picture an event shows. `key` names it for `eventArtworkImages`:
+ *  `d:` a choice made by hand, `a:` an automatic pick. `rev` changes when the
+ *  picture does, so a cached copy is never shown after it changed. */
+export interface ArtworkRef {
+  eventId: number;
+  key: string;
+  rev: string;
+  /** `user` - chosen by hand; `auto` - found, or chosen by hand for the same
+   *  artist under another event name. */
+  chosen: "user" | "auto";
+}
+
+export interface ArtworkImage {
+  key: string;
+  rev: string;
+  /** A data URL - never a link, so it shows offline. */
+  src: string;
+  fit: "cover" | "contain";
+  /** What the picture is of. */
+  title: string;
+  source: string;
+  page: string;
+}
+
+export type ArtworkLevel = "low" | "medium" | "high";
+
+export interface ArtworkCandidate {
+  id: string;
+  source: "deezer" | "wikipedia" | "earlier" | string;
+  sourceId: string;
+  title: string;
+  description: string;
+  page: string;
+  imageUrl: string;
+  fit: "cover" | "contain";
+  confidence: number;
+  level: ArtworkLevel;
+  reasons: string[];
+  thumb?: string;
+}
+
+export interface ArtworkDecision {
+  key: string;
+  state: "set" | "none" | "auto";
+  label: string;
+  source: string;
+  sourceTitle: string;
+  sourcePage: string;
+  updatedAt: string;
+}
+
+export interface ArtworkSuggestion {
+  identityKey: string;
+  eventKey: string | null;
+  label: string;
+  queryKey: string;
+  strategy: "artist" | "team" | "show" | "any";
+  shared: number;
+  decision: ArtworkDecision | null;
+  shown: ArtworkImage | null;
+  outcome: "match" | "ask" | "none" | "failed" | "unknown" | "off";
+  level: ArtworkLevel | null;
+  candidates: ArtworkCandidate[];
+  message: string | null;
+  checkedAt: string | null;
+}
+
+export interface ArtworkSuggestInput {
+  eventId?: number | null;
+  name: string;
+  artistTeam?: string | null;
+  categoryId?: number | null;
+  /** `cached` never asks the network; `search` asks only when nothing fresh
+   *  is known; `refresh` asks again. */
+  mode: "cached" | "search" | "refresh";
+}
+
+export interface ArtworkDecideInput {
+  key: string;
+  label: string;
+  queryKey: string;
+  state: "set" | "none" | "auto";
+  image?: string | null;
+  fit?: "cover" | "contain" | null;
+  source?: string | null;
+  sourceId?: string | null;
+  sourceTitle?: string | null;
+  sourcePage?: string | null;
+  imageUrl?: string | null;
+  confidence?: number | null;
+}
+
+export interface ArtworkBackfillReport {
+  searched: number;
+  found: number;
+  toConfirm: number;
+  failed: number;
+  remaining: number;
+  paused: boolean;
+}
+
+export interface ArtworkOptions {
+  auto: boolean;
+}

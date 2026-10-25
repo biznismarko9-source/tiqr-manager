@@ -20,6 +20,7 @@ import {
   type LiveSyncDeps,
   type LiveSyncView,
 } from "./liveSyncSession";
+import { quietly } from "./diagnostics";
 
 export type { LiveSyncView } from "./liveSyncSession";
 
@@ -85,7 +86,7 @@ export function nudgeLiveSync() {
  *  Drive is still a way changes travel depends on all of them. */
 export async function setLiveSyncEnabled(uid: string, enabled: boolean) {
   const s = await api.liveSyncSetEnabled(enabled);
-  await announceDevice(db, uid, s.deviceId, enabled, deps.platform).catch(() => {});
+  await announceDevice(db, uid, s.deviceId, enabled, deps.platform).catch(quietly("liveSync: liveSyncSetEnabled"));
   startLiveSync(uid);
   return s;
 }

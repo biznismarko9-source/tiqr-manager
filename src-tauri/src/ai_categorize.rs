@@ -322,6 +322,34 @@ fn ai_classify_category_name(
     Ok(parse_ai_category_reply(raw_reply, candidates))
 }
 
+/// 2.116.0: the same decision as `detect_category_for_event_name`, with the
+/// category list handed in - so a caller can read the list, let go of the
+/// database, and only then wait for the AI. `LOWER` in SQLite folds ASCII
+/// only, and so does this, so the two agree on every name.
+pub fn detect_category_among(event_name: &str, categories: &[(i64, String)], api_key: Option<&str>) -> Option<CategoryMatch> {
+    let trimmed = event_name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lookup_id = |name: &str| -> Option<i64> {
+        categories.iter().find(|(_, n)| n.eq_ignore_ascii_case(name)).map(|(id, _)| *id)
+    };
+    if let Some(rule_name) = free_rule_category_name(trimmed) {
+        if let Some(id) = lookup_id(rule_name) {
+            return Some(CategoryMatch { id, name: rule_name.to_string(), via_ai: false });
+        }
+    }
+    let api_key = api_key?;
+    let mut candidates: Vec<String> = categories.iter().map(|(_, n)| n.clone()).collect();
+    candidates.sort();
+    if candidates.is_empty() {
+        return None;
+    }
+    let ai_name = ai_classify_category_name(api_key, trimmed, &candidates).ok().flatten()?;
+    let id = lookup_id(&ai_name)?;
+    Some(CategoryMatch { id, name: ai_name, via_ai: true })
+}
+
 /// The single entry point both the automatic path (a brand-new event
 /// created during a live sheet sync, see commands::orders_sheet_sync::
 /// resolve_or_create_event) and the manual "Detect categories" button

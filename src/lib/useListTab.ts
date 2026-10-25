@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
+import { quietly } from "./diagnostics";
 
 /** 2.0.59: shared "Active vs Completed" list-tab pattern - marko wanted
  * Events/Orders/Tickets/Sales to each get something like the Dashboard's own
@@ -26,7 +27,7 @@ export function useListTab<T extends string>(settingKey: string, keys: readonly 
         if (cancelled || !raw || !(keys as readonly string[]).includes(raw)) return;
         setTabState(raw as T);
       })
-      .catch(() => {});
+      .catch(quietly("useListTab: read the remembered tab"));
     return () => {
       cancelled = true;
     };
@@ -36,7 +37,7 @@ export function useListTab<T extends string>(settingKey: string, keys: readonly 
   const setTab = useCallback(
     (next: T) => {
       setTabState(next);
-      api.setAppSetting(settingKey, next).catch(() => {});
+      api.setAppSetting(settingKey, next).catch(quietly("useListTab: setAppSetting"));
     },
     [settingKey],
   );

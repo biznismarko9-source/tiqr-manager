@@ -21,6 +21,42 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.116.0 - event pictures, diagnostics, atomic migrations
+
+- **`event_artworks` rows are never DELETEd.** The uid is derived from the
+  subject key (`artwork_uid`), and a deleted uid can never come back
+  (migration 028: a deletion wins over any later edit) - "back to
+  automatic" is `state = 'auto'`. Anything that cleans the table up must
+  update, never delete. The derivation itself (`event_artworks\0` + key,
+  SHA-256, first 16 bytes) must never change, or two computers stop
+  meeting in one record.
+- **`artwork_lookups` must never go into MERGE_TABLES.** It holds what the
+  services answered and the automatic pick; kept local, a late or wrong
+  automatic answer can never arrive on the other computer and replace a
+  picture chosen there by hand. It is also bookkeeping in
+  `db::is_bookkeeping_table` (an answer is not marko's change).
+- **The subject key does not depend on the category** (`subject_for`):
+  changing a category must never orphan a choice. Only the SEARCH depends
+  on it. A change to the name folding (`norm`) re-keys every subject - treat
+  it like a migration.
+- **No network under the database lock, and none on the window's thread**
+  (`suggest_with`, `backfill_with`, `detect_event_categories`): read, let
+  go, ask, then lock again to write - and write only what is still true
+  (`category_id IS NULL`, a failure never replacing a certain answer).
+- **Table rows keep their height.** The picture sizes carry negative
+  vertical margins (`EventArt` `row`, and `-my-0.5` / `-my-1` in Events and
+  Sales); measured before and after: Events 48, Inventory 32, Sales 46 px.
+- **`db::apply_migrations` wraps each migration with its record in one
+  transaction** - except a migration holding its own `BEGIN TRANSACTION`
+  (004, 017, 020, 027-030), because SQLite has no nested BEGIN. A new
+  migration should not carry its own BEGIN; it gets one.
+- **Every log line goes through `diag::redact`**, and the panic hook must
+  never wait for a lock (`try_lock`) - the panic may have happened while
+  that same thread was writing.
+- **Escape is decided once per key press** (`ui.tsx`, `listenForEscape`):
+  one listener per dialog closed the top dialog, React re-drew between
+  listeners, and the next one found itself on top and closed too.
+
 ## 2.115.1 - a sale's row and seats are a spoiler
 
 - **Escape first, then wrap in `||`** (`seat_lines`). A row or seat that

@@ -12,6 +12,7 @@ import { phaseLabel, phaseTone } from "../lib/liveSyncCore";
 import { useToast } from "../lib/toast";
 import type { LiveSyncStatus } from "../lib/types";
 import { Badge, Card, CHECKBOX_CLASS } from "./ui";
+import { quietly } from "../lib/diagnostics";
 
 const TONE_BADGE: Record<"ok" | "busy" | "warn" | "off", string> = {
   ok: "paid",
@@ -31,7 +32,7 @@ export function LiveSyncCard({ embedded = false }: { embedded?: boolean }) {
 
   useEffect(() => onLiveSync(setLive), []);
   useEffect(() => {
-    api.liveSyncStatus().then(setStatus).catch(() => {});
+    api.liveSyncStatus().then(setStatus).catch(quietly("LiveSyncCard: liveSyncStatus"));
   }, [live.phase, live.lastPullAt, live.lastPushAt]);
 
   const toggle = async (on: boolean) => {

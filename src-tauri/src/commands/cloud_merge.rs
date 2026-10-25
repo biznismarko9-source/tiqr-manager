@@ -124,6 +124,12 @@ pub(crate) const MERGE_TABLES: &[MergeTable] = &[
         natural_key: None,
         code: None,
     },
+    // 2.116.0 (migration 047): a picture chosen by hand for a subject. No
+    // foreign key - a subject is named by `identity_key`, not by an event
+    // id - and no natural key either: the uid is derived from that key
+    // (commands/event_artwork.rs), so both computers already agree on it
+    // and the newer choice wins like any other record.
+    MergeTable { name: "event_artworks", fks: &[], natural_key: None, code: None },
     MergeTable {
         name: "orders",
         fks: &[

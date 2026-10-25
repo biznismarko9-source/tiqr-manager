@@ -1412,6 +1412,32 @@ export function SummaryStat({
 // ---------------------------------------------------------------------------
 // Modal
 // ---------------------------------------------------------------------------
+/** 2.116.0: Escape closes the top dialog only - before, every open dialog
+ *  listened on `window`, and one press closed a dialog AND the form under
+ *  it, losing what was typed there. The top one is the last in the page:
+ *  a dialog opened inside another is drawn inside it, and of two side by
+ *  side the later one is drawn over the earlier. (Not the order the
+ *  effects ran in - React runs a child's effects before its parent's.) */
+let modalSeq = 0;
+/** What Escape does for each open dialog, by its id. One listener decides
+ *  for all of them, once per key press: with one listener each, closing the
+ *  top dialog re-drew the page before the next listener ran, and that one
+ *  then found itself on top and closed too. */
+const dialogEscapes = new Map<number, () => void>();
+let escapeListening = false;
+
+function listenForEscape() {
+  if (escapeListening) return;
+  escapeListening = true;
+  window.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || e.defaultPrevented) return;
+    const all = document.querySelectorAll("[data-dialog-id]");
+    const top = all[all.length - 1];
+    if (!top) return;
+    dialogEscapes.get(Number(top.getAttribute("data-dialog-id")))?.();
+  });
+}
+
 export function Modal({
   open,
   onClose,
@@ -1425,14 +1451,21 @@ export function Modal({
   children: ReactNode;
   width?: string;
 }) {
+  // The latest onClose, without re-registering on every render (which would
+  // also move this dialog to the top of the stack each time it re-rendered).
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const idRef = useRef(0);
+  if (idRef.current === 0) idRef.current = ++modalSeq;
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+    const id = idRef.current;
+    listenForEscape();
+    dialogEscapes.set(id, () => closeRef.current());
+    return () => {
+      dialogEscapes.delete(id);
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   return (
@@ -1446,8 +1479,14 @@ export function Modal({
     // 2.6.0: the panel is now a real bordered surface with the shared
     // `shadow-overlay`, its own header band, and a footer-safe scroll area -
     // the header no longer scrolls away with the content.
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 pt-[8vh] backdrop-blur-[2px] animate-[fadein_.15s_ease-out] dark:bg-[#05030c]/70">
+    <div
+      data-dialog-id={idRef.current}
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 pt-[8vh] backdrop-blur-[2px] animate-[fadein_.15s_ease-out] dark:bg-[#05030c]/70"
+    >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         className={`w-full ${width} overflow-hidden rounded-xl bg-surface shadow-overlay animate-[pop-in_.18s_ease-out]`}
       >
         <div className="flex items-center justify-between gap-4 bg-surface-muted px-5 py-3.5">
@@ -1739,11 +1778,37 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  // 2.116.0: Escape cancels - this dialog, never the form under it.
+  const cancelRef = useRef(onCancel);
+  cancelRef.current = onCancel;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  const idRef = useRef(0);
+  if (idRef.current === 0) idRef.current = ++modalSeq;
+  useEffect(() => {
+    if (!open) return;
+    const id = idRef.current;
+    listenForEscape();
+    dialogEscapes.set(id, () => {
+      if (!busyRef.current) cancelRef.current();
+    });
+    return () => {
+      dialogEscapes.delete(id);
+    };
+  }, [open]);
   if (!open) return null;
   return (
     // 2.0.74: same entrance treatment as Modal above - see its comment.
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-[2px] animate-[fadein_.15s_ease-out] dark:bg-[#05030c]/70">
-      <div className="w-full max-w-sm rounded-xl bg-surface p-5 shadow-overlay animate-[pop-in_.18s_ease-out]">
+    <div
+      data-dialog-id={idRef.current}
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-[2px] animate-[fadein_.15s_ease-out] dark:bg-[#05030c]/70"
+    >
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={title}
+        className="w-full max-w-sm rounded-xl bg-surface p-5 shadow-overlay animate-[pop-in_.18s_ease-out]"
+      >
         <div className="flex gap-3.5">
           <div
             className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ring-1 ring-inset ${danger ? "bg-red-50 text-red-600 ring-red-200/70 dark:bg-red-500/10 dark:text-red-400 dark:ring-red-400/20" : "bg-amber-50 text-amber-600 ring-amber-200/70 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-400/20"}`}

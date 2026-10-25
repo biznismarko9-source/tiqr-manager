@@ -2,6 +2,11 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./index.css";
+import { installDiagnostics } from "./lib/diagnosticsSink";
+
+// 2.116.0: from the very first moment, every failure is kept - including
+// the ones nothing on the screen catches (lib/diagnosticsSink.ts).
+installDiagnostics();
 
 // 2.2.10 (marko): the webview's own native right-click menu (Back/Reload/
 // Save as/Print/More tools - Tauri's default WRY/Chromium context menu) has

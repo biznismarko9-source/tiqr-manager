@@ -21,6 +21,8 @@ import Finance from "./pages/Finance";
 import Notes from "./pages/Notes";
 import MailIntelligence from "./pages/MailIntelligence";
 import Settings from "./pages/Settings";
+import { quietly } from "./lib/diagnostics";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 /** 2.39.0: `/tickets` was the Inventory list. Orders and Inventory were two
  *  lists over the same rows, so marko asked for one screen, keeping the name
@@ -108,7 +110,7 @@ function PasswordResetDeepLinkBridge() {
     const unlistenPromise = onOpenUrl((urls) => handleUrls(urls));
     return () => {
       cancelled = true;
-      unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
+      unlistenPromise.then((unlisten) => unlisten()).catch(quietly("App: unlisten"));
     };
   }, [navigate]);
 
@@ -134,6 +136,9 @@ export default function App() {
   useTheme();
 
   return (
+    // 2.116.0: the last line of defence - a failure outside every screen
+    // still ends in a message and a way back, never a blank window.
+    <ErrorBoundary area="app" root>
     <AuthProvider>
       <ToastProvider>
         <HashRouter>
@@ -188,5 +193,6 @@ export default function App() {
         </HashRouter>
       </ToastProvider>
     </AuthProvider>
+    </ErrorBoundary>
   );
 }

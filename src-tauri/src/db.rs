@@ -307,6 +307,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "046_live_sync",
         include_str!("../migrations/046_live_sync.sql"),
     ),
+    // 2.116.0: a picture for every event - what was chosen by hand
+    // (travels) and what the picture services answered (stays here).
+    (
+        "047_event_artwork",
+        include_str!("../migrations/047_event_artwork.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.
@@ -389,6 +395,9 @@ fn is_bookkeeping_table(table: &str) -> bool {
             | "sync_row_meta"
             | "sync_uid_alias"
             | "sync_pending"
+            // 2.116.0: what a picture service answered (migration 047). An
+            // answer arriving is not something marko changed.
+            | "artwork_lookups"
     )
 }
 
@@ -398,7 +407,7 @@ fn is_bookkeeping_table(table: &str) -> bool {
 /// the other machine (mail_store.rs), and a message arriving every second
 /// during a long first sync would otherwise keep the cloud copy permanently
 /// "changed" and push the whole main file over and over.
-fn counts_as_user_change(db: &str, table: &str) -> bool {
+pub(crate) fn counts_as_user_change(db: &str, table: &str) -> bool {
     db != "mail" && !is_bookkeeping_table(table)
 }
 
@@ -458,7 +467,7 @@ pub fn open_live_connection(path: &std::path::Path) -> rusqlite::Result<Connecti
     // it then. Mail commands report an error meanwhile; nothing else is
     // affected.
     if let Err(e) = crate::mail_store::attach(&conn, &crate::mail_store::mail_db_path(path)) {
-        eprintln!("TIQR: the mail file could not be opened, starting without it: {e}");
+        crate::diag::log(crate::diag::Severity::Error, "mail file", &format!("could not be opened, starting without it: {e}"));
     }
     Ok(conn)
 }
@@ -467,13 +476,27 @@ pub fn open_live_connection(path: &std::path::Path) -> rusqlite::Result<Connecti
 /// most once, tracked in `schema_migrations`. Future features (invoices,
 /// payments, fx rates, ...) just add a new `002_xxx.sql` file + array entry.
 pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
+    apply_migrations(conn, MIGRATIONS)?;
+    // 2.112.0: live sync's change capture - one set of triggers per table
+    // that travels, built from cloud_merge's MERGE_TABLES (live_sync.rs).
+    crate::commands::live_sync::install_triggers(conn)?;
+    // 2.110.0: the mail cache's own schema, and the one-time move of the
+    // cache out of this file. A no-op unless the mail file is attached.
+    crate::mail_store::ensure(conn)?;
+    Ok(())
+}
+
+/// The numbered files themselves, each at most once. Split out of
+/// `run_migrations` in 2.116.0 so a test can hand it a migration that fails
+/// half way and see that nothing of it stays behind.
+fn apply_migrations(conn: &Connection, migrations: &[(&str, &str)]) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
             version TEXT PRIMARY KEY,
             applied_at TEXT NOT NULL
          );",
     )?;
-    for (version, sql) in MIGRATIONS {
+    for (version, sql) in migrations {
         let already: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
             [version],
@@ -482,11 +505,34 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
         if already {
             continue;
         }
-        conn.execute_batch(sql)?;
-        conn.execute(
-            "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
-            [version],
-        )?;
+        // 2.116.0: a migration and the row that records it commit together.
+        // Before, a start killed between the two (or a statement failing half
+        // way) left the migration partly applied with no record of it, and
+        // the next start ran it again from the top - an ALTER TABLE ADD
+        // COLUMN that already happened fails the second time, and the app
+        // could not open its database. The old migrations that hold their own
+        // BEGIN/COMMIT (004, 017, 020, 027-030) run exactly as they always
+        // did: SQLite has no nested BEGIN, and they are atomic already.
+        let own_transaction = sql.contains("BEGIN TRANSACTION");
+        if !own_transaction {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+        }
+        let applied = conn.execute_batch(sql).and_then(|_| {
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                [version],
+            )
+        });
+        match applied {
+            Ok(_) if !own_transaction => conn.execute_batch("COMMIT")?,
+            Ok(_) => {}
+            Err(e) => {
+                if !own_transaction {
+                    let _ = conn.execute_batch("ROLLBACK");
+                }
+                return Err(e);
+            }
+        }
         // 2.30.0: the one-time rewrite of existing codes to the event-derived
         // form runs HERE, immediately after its own migration added
         // `legacy_code` - not as a separate startup step. Tying it to the
@@ -503,12 +549,6 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
             crate::codes::backfill_event_codes(conn)?;
         }
     }
-    // 2.112.0: live sync's change capture - one set of triggers per table
-    // that travels, built from cloud_merge's MERGE_TABLES (live_sync.rs).
-    crate::commands::live_sync::install_triggers(conn)?;
-    // 2.110.0: the mail cache's own schema, and the one-time move of the
-    // cache out of this file. A no-op unless the mail file is attached.
-    crate::mail_store::ensure(conn)?;
     Ok(())
 }
 
@@ -1669,6 +1709,7 @@ mod row_uid_tests {
     /// never syncs.
     const UID_TABLES: &[&str] = &[
         "events",
+        "event_artworks",
         "orders",
         "tickets",
         "sales",
@@ -1772,5 +1813,58 @@ mod row_uid_tests {
             .query_row("SELECT uid FROM events WHERE name = 'From the other machine'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(uid, "abc123");
+    }
+}
+
+#[cfg(test)]
+mod migration_atomicity_tests {
+    use super::apply_migrations;
+    use rusqlite::Connection;
+
+    fn exists(conn: &Connection, table: &str) -> bool {
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = ?1)", [table], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// 2.116.0 regression: a migration that fails half way used to leave its
+    /// first statements applied and itself unrecorded, so every later start
+    /// ran it again and failed on what was already there.
+    #[test]
+    fn a_migration_that_fails_half_way_leaves_nothing_behind_and_runs_cleanly_once_fixed() {
+        let conn = Connection::open_in_memory().unwrap();
+        let broken: &[(&str, &str)] =
+            &[("900_test", "CREATE TABLE t900 (x INTEGER); ALTER TABLE t900 ADD COLUMN y TEXT; SELECT * FROM missing;")];
+        assert!(apply_migrations(&conn, broken).is_err());
+        assert!(!exists(&conn, "t900"), "the half that ran was rolled back");
+        let recorded: i64 =
+            conn.query_row("SELECT COUNT(*) FROM schema_migrations WHERE version = '900_test'", [], |r| r.get(0)).unwrap();
+        assert_eq!(recorded, 0);
+
+        // The same migration, fixed (an ADD COLUMN that already ran would
+        // fail here if anything had stayed behind).
+        let fixed: &[(&str, &str)] = &[("900_test", "CREATE TABLE t900 (x INTEGER); ALTER TABLE t900 ADD COLUMN y TEXT;")];
+        apply_migrations(&conn, fixed).unwrap();
+        assert!(exists(&conn, "t900"));
+        // And never again.
+        apply_migrations(&conn, fixed).unwrap();
+    }
+
+    #[test]
+    fn a_migration_with_its_own_transaction_still_runs_as_before() {
+        let conn = Connection::open_in_memory().unwrap();
+        let own: &[(&str, &str)] = &[("901_test", "BEGIN TRANSACTION; CREATE TABLE t901 (x INTEGER); COMMIT;")];
+        apply_migrations(&conn, own).unwrap();
+        assert!(exists(&conn, "t901"));
+    }
+
+    #[test]
+    fn the_artwork_migration_can_run_again_over_itself() {
+        // Every statement in 047 is IF NOT EXISTS: a second run (the file
+        // replayed by hand, or a restore of a copy that has it) changes
+        // nothing and fails on nothing.
+        let conn = super::test_conn();
+        conn.execute_batch(include_str!("../migrations/047_event_artwork.sql")).unwrap();
+        assert!(exists(&conn, "event_artworks"));
+        assert!(exists(&conn, "artwork_lookups"));
     }
 }

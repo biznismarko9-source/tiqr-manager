@@ -4,7 +4,9 @@ import { api, errMsg } from "../lib/api";
 import { useDataChanged } from "../lib/dataChanged";
 import type { EventWithStats, FinanceEntry, OrderRecord, SaleGroup, SeatEntry, Ticket, TicketStatus } from "../lib/types";
 import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, formatSeatsSummary } from "../lib/format";
-import { Badge, Button, Card, ConfirmDialog, EmptyState, Figure, Figures, LoadingBlock } from "../components/ui";
+import { Badge, Button, Card, ConfirmDialog, EmptyState, Figure, Figures, LoadingBlock, Modal } from "../components/ui";
+import { EventArt } from "../components/EventArt";
+import { ArtworkPicker } from "../components/ArtworkPicker";
 import { FinanceCategoryBadge } from "../components/FinanceCategoryBadge";
 import {
   IconArrowLeft,
@@ -108,6 +110,9 @@ export default function EventDetail() {
   const [orders, setOrders] = useState<OrderRecord[] | null>(null);
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
   const [editOpen, setEditOpen] = useState(false);
+  // 2.116.0: the picture's own dialog - accept, choose another, upload,
+  // remove, back to automatic, for every event of this name or this one.
+  const [pictureOpen, setPictureOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -137,7 +142,17 @@ export default function EventDetail() {
       </Link>
 
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        <div>
+        <div className="flex min-w-0 items-start gap-3.5">
+        <button
+          type="button"
+          onClick={() => setPictureOpen(true)}
+          className="shrink-0 rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+          aria-label="Change the picture"
+          title="Change the picture"
+        >
+          <EventArt eventId={event.id} name={event.name} size="lg" />
+        </button>
+        <div className="min-w-0">
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{event.name}</h1>
             <Badge tone={event.status}>{event.status}</Badge>
@@ -153,10 +168,14 @@ export default function EventDetail() {
             {event.eventDate ? ` · ${formatDate(event.eventDate)}` : ""}
           </p>
         </div>
+        </div>
         <div className="flex gap-2">
           {/* 2.113.0: marko - "pri kazdom evente, sale, finance atd vies
               kliknut ... aby sa ti poslal". Hidden until Discord is set up. */}
           <SendToDiscordButton kind="event" id={event.id} />
+          <Button variant="secondary" onClick={() => setPictureOpen(true)}>
+            Picture
+          </Button>
           <Button variant="secondary" onClick={() => setEditOpen(true)}>
             <IconPencil className="h-4 w-4" /> Edit
           </Button>
@@ -177,6 +196,14 @@ export default function EventDetail() {
       <div className="mt-7">
         <SalesTab event={event} tickets={tickets} orders={orders} navigate={navigate} />
       </div>
+
+      <Modal open={pictureOpen} onClose={() => setPictureOpen(false)} title={`Picture for ${event.name}`} width="max-w-2xl">
+        <ArtworkPicker mode="immediate" eventId={event.id} name={event.name} categoryId={event.categoryId} />
+        <p className="mt-3 text-[11px] text-slate-500 dark:text-slate-400">
+          Pictures come from Deezer (music) and Wikipedia (teams, competitions, festivals and shows) - only the
+          event's name is sent to look for one. A picture is kept in TIQR, so it shows offline too.
+        </p>
+      </Modal>
 
       <EventFormModal
         open={editOpen}

@@ -76,6 +76,7 @@ import {
 } from "./icons";
 import { MailProposalCard } from "./MailProposal";
 import { Badge, Button, ConfirmDialog, Modal, Spinner } from "./ui";
+import { quietly } from "../lib/diagnostics";
 
 /** What changed in the reader: a field of this message (patched in place,
  *  so the list does not jump), or `null` for "something bigger - reload". */
@@ -1028,7 +1029,7 @@ export function MailReader({
       api
         .setMailRead(message.id, true)
         .then(() => onChanged({ isUnread: false }))
-        .catch(() => {});
+        .catch(quietly("Mail reader: mark as read"));
     }, MARK_READ_AFTER_MS);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps

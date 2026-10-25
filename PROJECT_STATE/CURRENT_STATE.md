@@ -16,8 +16,10 @@ step, before appending to `CHANGELOG.md`.
 TIQR Manager - a local-first, offline-by-default desktop app (Tauri 2 +
 React/TypeScript frontend, Rust + SQLite backend) for ticket resellers.
 No server of its own; the only outbound calls are the user's own machine
-talking directly to Google Sheets, Firebase Auth, an FX-rate API, and (for
-Price Checker) marketplace pages the user opens himself. Since 2.112.0, live
+talking directly to Google Sheets, Firebase Auth, an FX-rate API, (for
+Price Checker) marketplace pages the user opens, and - since 2.116.0, for
+event pictures, switchable - Deezer's and Wikipedia's public APIs, sent an
+event's name and nothing else. Since 2.112.0, live
 sync between marko's computers also goes through Firestore, under the
 signed-in account's own `users/{uid}` (opt-in per computer). Since 2.115.0,
 while both computers run, one reads Gmail and forwards what it stored to
@@ -26,7 +28,7 @@ once stored.
 
 ## Version
 
-**2.115.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.116.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, and - in the release zip, no longer in the
 repository since 2.113.0 (see `RELEASE.md`) - `release.ps1`'s `$Version` and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
@@ -2651,6 +2653,49 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.116.0 - a picture for every event; a stability and diagnostics pass**
+(report: `history/REDESIGN-2.116.0-REPORT.md`; asked in English as "Smart
+Event Artwork + Full Stability & Reliability Audit"):
+* `commands/event_artwork.rs` + migration 047. Three things kept apart: the
+  event, the SUBJECT (`name:<folded name>` - every event of one name shares
+  it; a match keeps both sides; never fuzzy) and the SEARCH
+  (`artist:coldplay` - what Deezer / Wikipedia are asked; "Coldplay -
+  Prague" and "- Vienna" share it). `event_artworks` holds choices made by
+  hand and travels (MERGE_TABLES; uid derived from the key, rows never
+  deleted - "auto" is a state); `artwork_lookups` holds the services'
+  answers and the automatic pick, stays here and is bookkeeping for the
+  Drive flag. What an event shows is worked out on every read
+  (`shown_for`): event-only choice, subject choice, a hand-picked picture
+  of the same search, the certain automatic pick, nothing. Confidence per
+  candidate with reasons (`score_deezer`, `score_wikipedia`): high is shown,
+  medium waits for a yes, low never. Network only off the window thread and
+  never under the DB lock; one search per subject at a time (`Flight`),
+  each service paced and paused after 429/quota, three minutes of rest
+  after "offline", failures backed off 10 min -> 24 h, a failure never
+  replaces a certain answer. Pictures only from `*.dzcdn.net` and
+  `upload.wikimedia.org` through `mail_view::fetch_picture`, stored as
+  checked data URLs. `Web` trait so the tests (33 in the module, 1 in
+  live_sync) use fixtures only.
+* Frontend: `lib/artworkStore.ts` (one map and one picture cache for every
+  screen, batched, single-flight, stale replies dropped, LRU 400; tested),
+  `lib/eventArtwork.ts` (store + background search driver +
+  `useArtworkSuggestion` with request ids + upload shrink), `components/
+  EventArt.tsx` (fixed-size frame, placeholder, alt text; sizes row 28 / sm
+  40 / md 56 / lg 72 with negative margins so table rows keep their
+  height), `components/ArtworkPicker.tsx` (deferred in the forms, immediate
+  on the event page). Settings -> Integrations -> Event pictures switch
+  (`event_artwork_auto`, per computer).
+* Stability: `src-tauri/src/diag.rs` (redacted `logs/tiqr.log` with
+  rotation, panic hook -> `last-crash.txt` shown once by
+  `take_crash_report`, `export_diagnostics` / `save_diagnostics`,
+  `report_client_error`); `lib/diagnostics.ts` (+ `quietly`, used at the 59
+  former `.catch(() => {})`), `lib/diagnosticsSink.ts` (window errors and
+  unhandled rejections), `components/ErrorBoundary.tsx` around every page
+  and the app; one Escape handler for all dialogs (top one only); atomic
+  migrations (`db::apply_migrations`); `detect_event_categories` async and
+  lock-free during AI calls; `discord::day` no longer slices inside a
+  character.
 
 **2.115.1 - a sale's row and seats are hidden in Discord** (report:
 `history/REDESIGN-2.115.1-REPORT.md`; marko: "ak pride new sale tak vo

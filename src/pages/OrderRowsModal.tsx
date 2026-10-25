@@ -21,6 +21,7 @@ import AiImportPanel from "../components/AiImportPanel";
 import { CURRENCIES, TICKET_TYPES } from "./Orders";
 import { parseSeats, seatsForCount } from "../lib/seats";
 import { useToast } from "../lib/toast";
+import { quietly } from "../lib/diagnostics";
 
 /**
  * New Order, as ROWS inside a modal over the Inventory list.
@@ -251,9 +252,9 @@ export default function OrderRowsModal({
 
   useEffect(() => {
     if (!open) return;
-    api.listEvents().then(setEvents).catch(() => {});
-    api.listPlatforms().then(setPlatforms).catch(() => {});
-    api.listTicketTypes().then(setTicketTypeOptions).catch(() => {});
+    api.listEvents().then(setEvents).catch(quietly("OrderRowsModal: listEvents"));
+    api.listPlatforms().then(setPlatforms).catch(quietly("OrderRowsModal: listPlatforms"));
+    api.listTicketTypes().then(setTicketTypeOptions).catch(quietly("OrderRowsModal: listTicketTypes"));
   }, [open]);
 
   // Every open starts clean - this component is mounted permanently by the

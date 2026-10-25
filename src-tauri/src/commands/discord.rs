@@ -223,9 +223,14 @@ pub(crate) fn day(raw: &str) -> Option<String> {
     let mut out = d.format("%a %-d %b %Y").to_string();
     let rest = raw.trim().get(10..).unwrap_or("");
     let time = rest.trim_start_matches(['T', ' ']);
-    if time.len() >= 5 && time.as_bytes()[2] == b':' && time[..5].chars().filter(|c| c.is_ascii_digit()).count() == 4 {
-        out.push_str(" · ");
-        out.push_str(&time[..5]);
+    // 2.116.0: `get`, not `[..5]` - a date typed or imported with something
+    // else after it ("19:3€") cut there inside a character, and the panic
+    // took the whole app down while announcing a sale.
+    if let Some(hm) = time.get(..5) {
+        if hm.as_bytes()[2] == b':' && hm.chars().filter(|c| c.is_ascii_digit()).count() == 4 {
+            out.push_str(" · ");
+            out.push_str(hm);
+        }
     }
     Some(out)
 }
@@ -1459,6 +1464,16 @@ mod tests {
     }
 
     /// 2.115.1: "ak pride new sale tak vo webhooku by malo byt hide row a seats".
+    #[test]
+    fn a_date_with_odd_characters_after_it_is_never_a_crash() {
+        // 2.116.0 regression: byte 5 of "19:3€" is inside the euro sign.
+        assert_eq!(day("2026-07-26 19:3€").as_deref(), Some("Sun 26 Jul 2026"));
+        assert_eq!(day("2026-07-26T19:30").as_deref(), Some("Sun 26 Jul 2026 · 19:30"));
+        assert_eq!(day("2026-07-26 ľš:čť").as_deref(), Some("Sun 26 Jul 2026"));
+        assert_eq!(day("2026-07-26").as_deref(), Some("Sun 26 Jul 2026"));
+        assert_eq!(day("not a date"), None);
+    }
+
     #[test]
     fn hidden_seats_keep_the_section_in_sight_and_nothing_can_close_the_spoiler() {
         let t = |s: &str, r: &str, x: &str| (s.to_string(), r.to_string(), x.to_string());

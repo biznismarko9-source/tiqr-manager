@@ -30,6 +30,30 @@ from old reports.
   until marko enables Pages (Settings -> Pages -> Deploy from a branch ->
   `main` / `/docs`). The Discord logo no longer depends on it.
 
+- **Event pictures (2.116.0): checked with fixtures only.** This build
+  environment cannot reach Deezer or Wikipedia, so the answers in the tests
+  are shaped after the services' documented responses, not recorded from
+  them. Every failure ends in the placeholder and a retry later, never in a
+  wrong picture - but the first real use is the real check of the search
+  and its confidence.
+- **Event pictures: a choice belongs to one event name.** "Coldplay - Prague"
+  and "Coldplay - Vienna" share the automatic picture and a picture chosen by
+  hand for "Coldplay", but "No picture" chosen for one name is not carried to
+  another, and renaming an event moves it to the new name's picture.
+- **A sheet sync that creates events asks the AI for their category while
+  holding the database** (`orders_sheet_sync::resolve_or_create_event` ->
+  `detect_category_for_event_name`), so the window can wait up to 20 s per
+  new event during such a sync when an AI key is built in. The "Detect
+  categories" button no longer does this (2.116.0); the sheet sync path is
+  inside its own transaction and was left as it was.
+- **A database that cannot be opened at start still closes the app before
+  its window appears.** Since 2.116.0 the reason is in `logs/tiqr.log` next
+  to the data, but no screen says it. Starting on a stand-in database
+  instead would risk work being typed into it and lost, so it was not done.
+- **Until both computers run 2.116.0**, live sync on the older one counts
+  each picture choice from the newer one as a conflict ("not a table this
+  version syncs"). Harmless; it stops with the update.
+
 - **Promotions cleanup and the new webhooks (2.114.0): checked with fakes
   only.** The AI sorting was not run against the real API here (no key in
   this environment); its request shape follows the API reference and is

@@ -37,6 +37,7 @@ import {
 } from "../lib/liveSync";
 import { phaseLabel, phaseTone } from "../lib/liveSyncCore";
 import { closeMailShare, startMailShare } from "../lib/mailShare";
+import { startArtworkSearch, stopArtworkSearch } from "../lib/eventArtwork";
 import { useToast } from "../lib/toast";
 import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
@@ -44,7 +45,9 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { MailSyncResult, ScanRunFinishedPayload } from "../lib/types";
 import { Tour } from "./Tour";
+import { ErrorBoundary } from "./ErrorBoundary";
 import logo from "../assets/logo.png";
+import { quietly } from "../lib/diagnostics";
 
 // 2.14.0: how often automatic sync looks at the other machine while the app
 // stays open. Five minutes is picked for what it costs, not for how fast it
@@ -224,6 +227,12 @@ export default function Layout() {
   const [liveOffer, setLiveOffer] = useState(false);
   // Paused because the database was just replaced from a copy - said once.
   const [livePaused, setLivePaused] = useState(false);
+  // 2.116.0: the note the last run left when it stopped unexpectedly - shown
+  // once (src-tauri/src/diag.rs keeps it for the diagnostic report).
+  const [crashNote, setCrashNote] = useState<string | null>(null);
+  useEffect(() => {
+    api.takeCrashReport().then(setCrashNote).catch(quietly("Layout: last crash note"));
+  }, []);
   const [liveOfferBusy, setLiveOfferBusy] = useState(false);
   // Decided at launch (see the Drive tick): Drive is only the backup copy,
   // because every computer seen lately syncs live.
@@ -236,17 +245,20 @@ export default function Layout() {
     // 2.115.0: beside it, in the same Firestore space - while both computers
     // run, one reads Gmail and sends the other the mail.
     const stopShare = startMailShare(uid);
+    // 2.116.0: pictures for events that have none, a few at a time.
+    startArtworkSearch();
     api
       .liveSyncStatus()
       .then((s) => {
         setLiveOffer(!s.decided);
         setLivePaused(s.pausedAfterRestore);
       })
-      .catch(() => {});
+      .catch(quietly("Layout: live sync status"));
     return () => {
       off();
       stop();
       stopShare();
+      stopArtworkSearch();
     };
   }, [user?.email]);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -407,7 +419,7 @@ export default function Layout() {
         .then((update) => {
           if (update) toast.info(`TIQR Manager ${update.version} is available - open Settings to install it.`);
         })
-        .catch(() => {});
+        .catch(quietly("Layout: check for an update"));
     };
     runCheck();
     const interval = setInterval(runCheck, UPDATE_CHECK_INTERVAL_MS);
@@ -688,7 +700,7 @@ export default function Layout() {
   // Settings are where a real failure IS shown, on purpose).
   useEffect(() => {
     const check = () => {
-      api.checkAndSendNotifications().catch(() => {});
+      api.checkAndSendNotifications().catch(quietly("Layout: checkAndSendNotifications"));
     };
     check();
     const interval = setInterval(check, 30 * 60 * 1000);
@@ -720,16 +732,16 @@ export default function Layout() {
         if (stopped) un();
         else unlisten = un;
       })
-      .catch(() => {});
-    api.startMailReader().catch(() => {});
+      .catch(quietly("Layout: listen for mail sync"));
+    api.startMailReader().catch(quietly("Layout: startMailReader"));
     const off = onMailSyncRequested(() => {
-      api.wakeMailReader().catch(() => {});
+      api.wakeMailReader().catch(quietly("Layout: wakeMailReader"));
     });
     return () => {
       stopped = true;
       off();
       unlisten?.();
-      api.holdMailReader().catch(() => {});
+      api.holdMailReader().catch(quietly("Layout: holdMailReader"));
     };
   }, []);
 
@@ -969,6 +981,29 @@ export default function Layout() {
             </button>
           </div>
         )}
+        {crashNote && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-7 py-2 text-xs text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300">
+            <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 flex-1">
+              <strong className="font-semibold">TIQR closed unexpectedly last time.</strong> What was saved before it is
+              safe. The details are in Settings - Support - Diagnostic report, ready to send.
+            </span>
+            <Link
+              to="/settings/support"
+              onClick={() => setCrashNote(null)}
+              className="rounded-md bg-amber-600 px-2 py-1 font-semibold text-white transition hover:bg-amber-500"
+            >
+              Open
+            </Link>
+            <button
+              type="button"
+              onClick={() => setCrashNote(null)}
+              className="rounded-md px-2 py-1 font-semibold transition hover:bg-amber-100 dark:hover:bg-amber-500/20"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         {livePaused && live.phase === "off" && (
           <div className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-7 py-2 text-xs text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300">
             <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />
@@ -1065,7 +1100,11 @@ export default function Layout() {
           </div>
         )}
         <div className="px-7 py-5">
-          <Outlet />
+          {/* 2.116.0: a screen that fails, fails alone - the sidebar and
+              everything else stay (components/ErrorBoundary.tsx). */}
+          <ErrorBoundary area={`page ${location.pathname}`} resetKey={location.pathname}>
+            <Outlet />
+          </ErrorBoundary>
         </div>
       </main>
       <SyncActivity activity={syncActivity} />

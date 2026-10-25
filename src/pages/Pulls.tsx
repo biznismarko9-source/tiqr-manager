@@ -53,6 +53,7 @@ import { useNarrowTables } from "../lib/useNarrowTables";
 import { useListTab } from "../lib/useListTab";
 import { feeTotals, isPullDone, isReceivedPullDone, soldCell } from "../lib/pullStatus";
 import { completionStatus } from "../lib/completion";
+import { quietly } from "../lib/diagnostics";
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN"];
 
@@ -236,7 +237,7 @@ function GivenPulls() {
   }, [sortBy]);
 
   useEffect(() => {
-    api.listPlatforms().then(setPlatforms).catch(() => {});
+    api.listPlatforms().then(setPlatforms).catch(quietly("Pulls: listPlatforms"));
   }, []);
 
   // 2.114.2: no transfer filter here any more - it narrows the table only
@@ -850,7 +851,7 @@ function PullFormModal({
 
   useEffect(() => {
     if (!open) return;
-    api.listPlatforms().then(setPlatforms).catch(() => {});
+    api.listPlatforms().then(setPlatforms).catch(quietly("Pulls: listPlatforms"));
     if (pull) {
       setBuyerName(pull.buyerName);
       setEventName(pull.eventName);

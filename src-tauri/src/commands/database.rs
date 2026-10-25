@@ -223,6 +223,7 @@ mod tests {
         // toolchain on the machine these releases are built on. All 39 are
         // registered in db.rs's MIGRATIONS and all 39 apply to a fresh file,
         // which is the thing this count actually proves.
+        // 2.116.0: 46 -> 47. Migration 047 (event pictures).
         // 2.112.0: 45 -> 46. Migration 046 (live sync bookkeeping).
         // 2.109.0: 43 -> 44. Migration 044 (mail fetch queue).
         // 2.106.0: 42 -> 43. Migration 043 (mail automation link).
@@ -234,7 +235,7 @@ mod tests {
         // not yet in CI. Deliberately still a HARDCODED number and not
         // `MIGRATIONS.len()`: derived from the same list it is checking, it
         // would always agree with itself and prove nothing.
-        assert_eq!(migration_count, 46, "a fresh per-account file must end up on the same schema version as every other file");
+        assert_eq!(migration_count, 47, "a fresh per-account file must end up on the same schema version as every other file");
         assert!(event_names(&conn).is_empty());
     }
 

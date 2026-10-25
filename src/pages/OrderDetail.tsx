@@ -59,6 +59,8 @@ import { orderCompletionChecks } from "./Orders";
 import { completionStatus } from "../lib/completion";
 import { PullReceivedFormModal } from "./Pulls";
 import { SendToDiscordButton } from "../components/Discord";
+import { EventArt } from "../components/EventArt";
+import { quietly } from "../lib/diagnostics";
 
 // 2.0.69: the 3 real statuses a ticket can freely move between outside of a
 // sale - same closed set TicketStatusBar's own 3 buttons already offer, and
@@ -169,8 +171,8 @@ export default function OrderDetail() {
         setSelected((prev) => new Set([...prev].filter((id) => list.some((t) => t.id === id))));
       })
       .catch((e) => toast.error(errMsg(e)));
-    api.getOrderSalesSummary(orderId).then(setSalesSummary).catch(() => {});
-    api.listFinanceEntriesForOrder(orderId).then(setFinanceEntriesForOrder).catch(() => {});
+    api.getOrderSalesSummary(orderId).then(setSalesSummary).catch(quietly("OrderDetail: getOrderSalesSummary"));
+    api.listFinanceEntriesForOrder(orderId).then(setFinanceEntriesForOrder).catch(quietly("OrderDetail: listFinanceEntriesForOrder"));
     loadPullsReceived();
   });
 
@@ -209,7 +211,11 @@ export default function OrderDetail() {
       </Link>
 
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        <div>
+        {/* 2.116.0: the picture of the event this order is for - chosen on
+            the Events page, only shown here. */}
+        <div className="flex min-w-0 items-start gap-3.5">
+        <EventArt eventId={order.eventId} name={order.eventName} size="md" />
+        <div className="min-w-0">
           <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">{detailLabel}</p>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{order.code}</h1>
@@ -235,6 +241,7 @@ export default function OrderDetail() {
             {order.eventName}
             {" "}&middot; purchased {formatDate(order.purchaseDate)}
           </p>
+        </div>
         </div>
         <div className="flex gap-2">
           {/* 2.65.0 - marko: *"z inventaru ked prekliknes order tak mas tam
@@ -919,8 +926,8 @@ function RecordInFinanceModal({
 
   useEffect(() => {
     if (!open) return;
-    api.listFinanceCategories().then(setCategories).catch(() => {});
-    api.listAccounts().then(setAccounts).catch(() => {});
+    api.listFinanceCategories().then(setCategories).catch(quietly("OrderDetail: listFinanceCategories"));
+    api.listAccounts().then(setAccounts).catch(quietly("OrderDetail: listAccounts"));
     setScope("business");
     setEntryDate(order.purchaseDate);
     setCategoryId("");
@@ -1092,7 +1099,7 @@ function OrderEditModal({
 
   useEffect(() => {
     if (!open) return;
-    api.listPlatforms().then(setPlatforms).catch(() => {});
+    api.listPlatforms().then(setPlatforms).catch(quietly("OrderDetail: listPlatforms"));
     setSupplierId(order.supplierId);
     setPlatformId(order.platformId);
     setPurchaseDate(order.purchaseDate);

@@ -53,6 +53,8 @@ import {
 } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { usePreferredCurrency } from "../lib/preferredCurrency";
+import { EventArt } from "../components/EventArt";
+import { quietly } from "../lib/diagnostics";
 /* 2.95.0: the Dashboard's chart drops the "Profit & Loss" mode at marko's
    request. Filtered HERE rather than removed from `METRICS` itself, because
    that list is also Recap's (components/Recap.tsx) and he pointed at this
@@ -202,7 +204,7 @@ function useDashboardTab(): [DashboardTab, (tab: DashboardTab) => void] {
         if (cancelled || !raw || !isDashboardTab(raw)) return;
         setTabState(raw);
       })
-      .catch(() => {});
+      .catch(quietly("Dashboard: read the remembered tab"));
     return () => {
       cancelled = true;
     };
@@ -210,7 +212,7 @@ function useDashboardTab(): [DashboardTab, (tab: DashboardTab) => void] {
 
   const setTab = useCallback((next: DashboardTab) => {
     setTabState(next);
-    api.setAppSetting(DASHBOARD_TAB_KEY, next).catch(() => {});
+    api.setAppSetting(DASHBOARD_TAB_KEY, next).catch(quietly("Dashboard: setAppSetting"));
   }, []);
 
   return [tab, setTab];
@@ -287,7 +289,7 @@ export default function Dashboard() {
     api
       .getDashboard({ period, from: from || undefined, to: to || undefined })
       .then(setData)
-      .catch(() => {});
+      .catch(quietly("Dashboard: refresh after a change"));
   });
 
   useEffect(() => {
@@ -757,9 +759,13 @@ export default function Dashboard() {
                               to={`/events/${ev.id}`}
                               className="flex items-center justify-between gap-2 px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/60"
                             >
-                              <div className="min-w-0">
-                                <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{ev.name}</p>
-                                <p className="text-xs text-slate-500 dark:text-slate-400">{formatDate(ev.eventDate)}</p>
+                              {/* 2.116.0: the event's picture, as on Events. */}
+                              <div className="flex min-w-0 items-center gap-2.5">
+                                <EventArt eventId={ev.id} name={ev.name} size="sm" />
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{ev.name}</p>
+                                  <p className="text-xs text-slate-500 dark:text-slate-400">{formatDate(ev.eventDate)}</p>
+                                </div>
                               </div>
                               <Badge tone={ev.status}>{ev.status}</Badge>
                             </Link>

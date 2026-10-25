@@ -16,6 +16,48 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.116.0 - Obrázok pre každú udalosť, a aplikácia, ktorá padá bezpečne
+
+**Obrázky udalostí.** Udalosť má obrázok interpreta alebo tímu: v zozname
+Events, na stránke udalosti, v Inventory, v objednávke, v Sales, v predaji aj
+na Dashboarde. Je to vždy ten istý obrázok, vybraný na stránke Events, nikde
+inde sa nehľadá.
+- Hľadá sa z názvu: Deezer pre hudbu, Wikipedia pre tímy, súťaže, festivaly a
+  predstavenia. Obe sú zadarmo a bez kľúča, posiela sa len názov udalosti.
+- Istá zhoda sa ukáže sama, pravdepodobná čaká na „Yes, use it", neistá sa
+  nikdy neukáže. Pri každom obrázku je zdroj a miera istoty.
+- Pri novej udalosti (stĺpec Picture), pri úprave aj neskôr na stránke
+  udalosti sa dá prijať, vybrať iný, nahrať vlastný, nechať bez obrázka,
+  vrátiť na automatický alebo hľadať znova. Ide to pre všetky udalosti s
+  rovnakým názvom alebo len pre túto.
+- Ručná voľba sa nikdy neprepíše automaticky a prenáša sa na druhý počítač.
+  Automatická zostáva na tomto počítači.
+- Obrázok je uložený v TIQR, takže je viditeľný aj offline. Po reštarte sa
+  nič nehľadá znova. Podobné názvy („Coldplay" a „Coldplay Tribute Band")
+  ani dva zápasy jedného tímu obrázok nezdieľajú.
+- Vypína sa v Settings -> Integrations -> Event pictures.
+- Výška riadkov v tabuľkách ostala presne rovnaká.
+
+**Stabilita.**
+- Chyba pri kreslení obrazovky už nezhodí celé okno. Zhodí len tú obrazovku,
+  s ID chyby a tlačidlom „Try again".
+- Ak aplikácia spadne, nechá poznámku. Pri ďalšom štarte o nej dá vedieť.
+- Chyby sa zapisujú do `logs/tiqr.log` vedľa dát, bez tokenov, mailov a
+  hesiel. Pribudlo 59 miest, kde sa chyba predtým potichu zahodila.
+- Settings -> Support -> Diagnostic report vytvorí report, ktorý sa dá
+  bezpečne poslať.
+- Opravené:
+  - Pád pri správe na Discord, keď je za dátumom nezvyčajný znak.
+  - „Detect categories" zamrazil okno počas čakania na AI.
+  - Migrácia, ktorá zlyhá v polovici, už nenechá databázu rozbitú.
+  - Escape zatváral naraz dialóg aj formulár pod ním.
+
+Migrácia 047 len pridáva dve tabuľky (`event_artworks`, `artwork_lookups`),
+nič nemení ani nemaže. Zip obsahuje aj 2.115.0 a 2.115.1.
+
+`cargo test` 1641 prešlo (4 ignorované, ako doteraz), `npm test` 64,
+build v poriadku.
+
 ## 2.115.1 - V správe o predaji sú rad a sedadlá skryté
 
 **Discord, kanál Sales:** rad a sedadlá sú v správe o predaji spoiler -
