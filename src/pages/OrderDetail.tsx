@@ -59,6 +59,8 @@ import { orderCompletionChecks } from "./Orders";
 import { completionStatus } from "../lib/completion";
 import { PullReceivedFormModal } from "./Pulls";
 import { SendToDiscordButton } from "../components/Discord";
+import { EventArt } from "../components/EventArt";
+import { quietly } from "../lib/diagnostics";
 
 // 2.0.69: the 3 real statuses a ticket can freely move between outside of a
 // sale - same closed set TicketStatusBar's own 3 buttons already offer, and
@@ -169,8 +171,8 @@ export default function OrderDetail() {
         setSelected((prev) => new Set([...prev].filter((id) => list.some((t) => t.id === id))));
       })
       .catch((e) => toast.error(errMsg(e)));
-    api.getOrderSalesSummary(orderId).then(setSalesSummary).catch(() => {});
-    api.listFinanceEntriesForOrder(orderId).then(setFinanceEntriesForOrder).catch(() => {});
+    api.getOrderSalesSummary(orderId).then(setSalesSummary).catch(quietly("OrderDetail: getOrderSalesSummary"));
+    api.listFinanceEntriesForOrder(orderId).then(setFinanceEntriesForOrder).catch(quietly("OrderDetail: listFinanceEntriesForOrder"));
     loadPullsReceived();
   });
 
@@ -209,7 +211,11 @@ export default function OrderDetail() {
       </Link>
 
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        <div>
+        {/* 2.116.0: the picture of the event this order is for - chosen on
+            the Events page, only shown here. */}
+        <div className="flex min-w-0 items-start gap-3.5">
+        <EventArt eventId={order.eventId} name={order.eventName} size="md" />
+        <div className="min-w-0">
           <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">{detailLabel}</p>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{order.code}</h1>
@@ -235,6 +241,7 @@ export default function OrderDetail() {
             {order.eventName}
             {" "}&middot; purchased {formatDate(order.purchaseDate)}
           </p>
+        </div>
         </div>
         <div className="flex gap-2">
           {/* 2.65.0 - marko: *"z inventaru ked prekliknes order tak mas tam
@@ -454,93 +461,32 @@ export default function OrderDetail() {
       ) : tickets.length === 0 ? (
         <EmptyState icon={<IconTicket className="h-5 w-5" />} title="No tickets found for this order" />
       ) : (
-        // 2.0.35: same proportional-percentage model Sales.tsx now uses -
-        // see that file's colgroup comment for the full history and the
-        // honest narrow-window tradeoff. Two changes bundled in with the
-        // conversion since these exact columns were already being touched:
-        // Ticket went 84px -> 120px (basis for its new percentage) - same
-        // truncating-10-char-code bug as Sale's own 2.0.33 fix
-        // ("TIX-000001" didn't fit in 84px either), flagged since the
-        // 2.0.33 report's FOUND BUT NOT TOUCHED section. Seat's share grew
-        // from "whatever's left" to an explicit 65% (910px at the 1400px
-        // reference, generous since this table has fewer competing fixed
-        // columns than Sale Detail's own version of this) - marko's own
-        // answer (chat) to widening it: same reasoning as Sale Detail's
-        // identical change, see that file's comment. Section/Row/Seat
-        // merge into one Seat column via formatSeatLocation (lib/
-        // format.ts, same treatment Sale Detail got in 1.8.2) - the 3
-        // underlying fields are untouched, only how they display here
-        // changed.
-        // 2.0.37: same shift as Sales.tsx made - min-w-[1400px] plus a
-        // single percentage set couldn't stop a horizontal scrollbar below
-        // 1400px wide, only stop columns shrinking below their floor. Now
-        // two full percentage sets switched by the same shared
-        // useNarrowTables() breakpoint as every other table: Listing price
-        // hides below 1690px (still on Cost/Status, and the ticket's own
-        // page - never Ticket/Seat/Cost), everything else grows a little
-        // and switches to the smaller .th-c-narrow/.td-c-narrow. See
-        // Sales.tsx's own colgroup comment and PROTECTED-AREAS-NOTES.md
-        // (2.0.37 section) for the full reasoning and verification.
-        // 2.0.38: Ticket's own code column was STILL under-measured (same
-        // root cause as every other table this version - see PROTECTED-
-        // AREAS-NOTES.md's 2.0.38 section). Recomputed every column against
-        // real rendered content, which also caught the same gap as Sale
-        // Detail's own file: the trailing actions column (just an Edit
-        // button here) never had a real measured width - its old
-        // 2.707%/4.787% were unmeasured guesses. Shared breakpoint moved to
-        // 1649px (was 1690px) - see useNarrowTables.ts.
+        // 2.0.35-2.0.69 sized these columns as percentages of the table
+        // (history in PROTECTED-AREAS-NOTES.md); 2.115.0 replaced that with
+        // fixed widths - see the note on the table. Below the shared
+        // useNarrowTables() breakpoint, Listing price still hides (it is on
+        // each ticket's own page) and the cells use .td-c-narrow.
         <div className="table-shell">
-          <table className="w-full table-fixed border-collapse">
-            {isNarrow ? (
-              // 2.0.68 (marko's report, "taktiez u orders to tak urob"): 2
-              // new columns added - Delivery status/Payout status - alongside
-              // the existing Status column, which keeps its exact label/
-              // field/width untouched (it's ticket.status, the real
-              // system-managed enum - still essential to TicketStatusBar's
-              // bulk actions above). 2.0.69: dropped the 3rd new column,
-              // Resale status - marko's own follow-up: on this table it
-              // showed the same value as the real Status column right next
-              // to it in practice (both "Sold"), so it was pure redundant
-              // noise here - unlike Sale Detail, which has no other Status
-              // column to duplicate it, so that one stays. Their combined
-              // budget comes entirely out of Seat's own considerable surplus
-              // (67.195% -> 49.195%) - this table has far fewer competing
-              // fixed columns than Sale Detail's version of this, so even
-              // after the cut Seat stays generous. See
-              // REDESIGN-2.0.68-REPORT.md / REDESIGN-2.0.69-REPORT.md.
-              <colgroup>
-                <col className="w-8" />
-                <col className="w-[9.756%]" />
-                {/* 2.64.0: Event date, 10 points taken from Seat - it had
-                    49% for "409 · 56 · 23" and can spare them. Sums to 100. */}
-                <col className="w-[10%]" />
-                <col className="w-[39.195%]" />
-                <col className="w-[10%]" />
-                <col className="w-[10.122%]" />
-                <col className="w-[10%]" />
-                <col className="w-[8%]" />
-                <col className="w-[2.927%]" />
-              </colgroup>
-            ) : (
-              // 2.0.68/2.0.69: same reasoning as the narrow colgroup above -
-              // the 2 new columns' combined budget comes out of Seat's
-              // surplus (68.175% -> 53.175%), every other column (including
-              // the existing Status) keeps its previously-measured width
-              // exactly.
-              <colgroup>
-                <col className="w-8" />
-                <col className="w-[7.638%]" />
-                {/* 2.64.0: see the narrow colgroup above. Sums to 100. */}
-                <col className="w-[10%]" />
-                <col className="w-[43.175%]" />
-                <col className="w-[7.779%]" />
-                <col className="w-[8.274%]" />
-                <col className="w-[6.436%]" />
-                <col className="w-[8.5%]" />
-                <col className="w-[6.5%]" />
-                <col className="w-[1.697%]" />
-              </colgroup>
-            )}
+          {/* 2.115.0, marko: "aj orders su problem oprav" - the screenshot
+              had Edit falling a letter per line and the status reading
+              "Availal": the percentage widths gave those columns a sliver
+              and Seat a gap. Fixed widths now, the convention every other
+              list follows (2.102.0, Finance in 2.113.1): each column is as
+              wide as what it holds, Seat takes what is left, and a window
+              too narrow scrolls rather than squeezing. */}
+          <table className={`w-full table-fixed border-collapse ${isNarrow ? "min-w-[940px]" : "min-w-[1080px]"}`}>
+            <colgroup>
+              <col className="w-10" />
+              <col className={isNarrow ? "w-[116px]" : "w-[128px]"} />
+              <col className={isNarrow ? "w-[96px]" : "w-[108px]"} />
+              <col />
+              <col className={isNarrow ? "w-[96px]" : "w-[108px]"} />
+              {!isNarrow && <col className="w-[116px]" />}
+              <col className="w-[148px]" />
+              <col className={isNarrow ? "w-[152px]" : "w-[164px]"} />
+              <col className={isNarrow ? "w-[128px]" : "w-[140px]"} />
+              <col className="w-[64px]" />
+            </colgroup>
             <thead>
               <tr>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>
@@ -712,8 +658,8 @@ export default function OrderDetail() {
                         <span className="text-slate-500 dark:text-slate-400">-</span>
                       )}
                     </td>
-                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
-                      <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-0.5">
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>
+                      <div className="flex items-center justify-end gap-x-2">
                         {/* 1.9.1: this used to have a "View sale" link into
                             /sales (added in 1.6.0 for a sold ticket, since
                             there was previously no way to get from here to
@@ -980,8 +926,8 @@ function RecordInFinanceModal({
 
   useEffect(() => {
     if (!open) return;
-    api.listFinanceCategories().then(setCategories).catch(() => {});
-    api.listAccounts().then(setAccounts).catch(() => {});
+    api.listFinanceCategories().then(setCategories).catch(quietly("OrderDetail: listFinanceCategories"));
+    api.listAccounts().then(setAccounts).catch(quietly("OrderDetail: listAccounts"));
     setScope("business");
     setEntryDate(order.purchaseDate);
     setCategoryId("");
@@ -1153,7 +1099,7 @@ function OrderEditModal({
 
   useEffect(() => {
     if (!open) return;
-    api.listPlatforms().then(setPlatforms).catch(() => {});
+    api.listPlatforms().then(setPlatforms).catch(quietly("OrderDetail: listPlatforms"));
     setSupplierId(order.supplierId);
     setPlatformId(order.platformId);
     setPurchaseDate(order.purchaseDate);

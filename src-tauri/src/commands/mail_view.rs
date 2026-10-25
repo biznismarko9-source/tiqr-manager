@@ -193,9 +193,24 @@ pub(crate) fn sniff_image(b: &[u8]) -> Option<&'static str> {
         Some("image/gif")
     } else if b.len() >= 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WEBP" {
         Some("image/webp")
+    } else if is_avif(b) {
+        // 2.115.0: what picture servers send more and more often; both
+        // windows TIQR runs in show it.
+        Some("image/avif")
     } else {
         None
     }
+}
+
+/// An AVIF picture: an ISO media file whose `ftyp` box names AVIF as its
+/// brand, or among the brands it is compatible with.
+fn is_avif(b: &[u8]) -> bool {
+    if b.len() < 16 || &b[4..8] != b"ftyp" {
+        return false;
+    }
+    let size = (u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize).clamp(16, b.len().min(256));
+    let brand = |at: usize| b.get(at..at + 4).is_some_and(|x| x == b"avif" || x == b"avis");
+    brand(8) || (16..size).step_by(4).any(brand)
 }
 
 /// What an attachment is, by its bytes and - only where the bytes are a
@@ -320,7 +335,12 @@ fn walk(part: &Value, out: &mut Parts, depth: u32) {
     let mime = part.get("mimeType").and_then(|v| v.as_str()).unwrap_or("").to_ascii_lowercase();
     let filename = part.get("filename").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let disposition = header(part, "Content-Disposition").unwrap_or("").to_ascii_lowercase();
-    let content_id = header(part, "Content-ID").map(|c| c.trim().trim_start_matches('<').trim_end_matches('>').to_string());
+    // 2.115.0: a picture a mail program embedded may carry its id only as
+    // X-Attachment-Id.
+    let content_id = header(part, "Content-ID")
+        .or_else(|| header(part, "X-Attachment-Id"))
+        .map(|c| c.trim().trim_start_matches('<').trim_end_matches('>').to_string())
+        .filter(|c| !c.is_empty());
     let body = part.get("body");
     let attachment_id = body.and_then(|b| b.get("attachmentId")).and_then(|v| v.as_str()).map(str::to_string);
     let data = body.and_then(|b| b.get("data")).and_then(|v| v.as_str()).map(str::to_string);
@@ -394,16 +414,48 @@ fn image_key(src: &ImageSource, message_id: i64) -> String {
 fn source_of(src: &str) -> Option<ImageSource> {
     let s = src.trim();
     let lower = s.to_ascii_lowercase();
-    if let Some(cid) = s.strip_prefix("cid:").or_else(|| s.strip_prefix("CID:")) {
-        return Some(ImageSource::Cid(cid.trim_matches(['<', '>']).to_string()));
+    if lower.starts_with("cid:") {
+        return Some(ImageSource::Cid(s[4..].trim().trim_matches(['<', '>']).to_string()));
     }
     if lower.starts_with("https://") || lower.starts_with("http://") {
         return Some(ImageSource::Remote(s.to_string()));
+    }
+    // 2.115.0: "//host/logo.png" - the web page's own scheme, which for a
+    // mail is the secure one.
+    if s.starts_with("//") && s.len() > 2 {
+        return Some(ImageSource::Remote(format!("https:{s}")));
     }
     if lower.starts_with("data:image/") {
         return Some(ImageSource::Data(s.to_string()));
     }
     None
+}
+
+/// Whether a part's Content-ID is the one a `cid:` picture names - as
+/// written, in another case, or with its `@` and the like %-encoded, as the
+/// standard for `cid:` links has it.
+fn same_cid(part: &str, wanted: &str) -> bool {
+    part == wanted || part.eq_ignore_ascii_case(wanted) || percent_decoded(wanted).is_some_and(|w| part.eq_ignore_ascii_case(&w))
+}
+
+fn percent_decoded(s: &str) -> Option<String> {
+    if !s.contains('%') {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 fn tiny(v: Option<&str>) -> bool {
@@ -485,10 +537,13 @@ fn clean_with_images(html: &str, images: &HashMap<String, String>) -> String {
 }
 
 /// Puts the pictures back: every `tiqr-img:<key>` becomes the picture itself.
-fn inline_images(html: &str, dir: &Path) -> (String, i64) {
+/// Also says which pictures are not in the folder (yet) - those stay empty,
+/// showing what the message says in their place, and are tried again.
+fn inline_images(html: &str, dir: &Path) -> (String, i64, Vec<String>) {
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
     let mut shown = 0;
+    let mut missing: Vec<String> = Vec::new();
     while let Some(at) = rest.find(IMG_TOKEN) {
         out.push_str(&rest[..at]);
         let after = &rest[at + IMG_TOKEN.len()..];
@@ -501,13 +556,113 @@ fn inline_images(html: &str, dir: &Path) -> (String, i64) {
                 out.push_str(&data);
                 shown += 1;
             }
-            // Gone from the folder: a blank picture rather than a broken one.
-            None => out.push_str("data:image/gif;base64,R0lGODlhAQABAAAAACw="),
+            None => {
+                if !missing.contains(&key) {
+                    missing.push(key.clone());
+                }
+            }
         }
         rest = &after[key.len()..];
     }
     out.push_str(rest);
-    (out, shown)
+    (out, shown, missing)
+}
+
+/// A body kept before 2.115.0 that lost a picture: an `<img>` with no
+/// picture of TIQR's own in it. Such a copy no longer knows where the
+/// picture was, so the message is downloaded once more.
+fn lost_pictures(html: &str) -> bool {
+    html.matches("<img").count() > html.matches(&format!("src=\"{IMG_TOKEN}")).count()
+}
+
+/// What is kept with a body about its pictures (`mail_bodies.images`): each
+/// picture it shows, by its key, and where it comes from - so a picture that
+/// could not be copied the first time is tried again later.
+#[derive(Debug, Serialize, serde::Deserialize, Default, PartialEq)]
+struct KeptPictures {
+    v: u8,
+    pictures: Vec<KeptPicture>,
+}
+
+#[derive(Debug, Serialize, serde::Deserialize, Clone, PartialEq)]
+struct KeptPicture {
+    key: String,
+    /// The web address, `cid:<id>`, or `data` for one that was inside the
+    /// message and so is never missing.
+    src: String,
+}
+
+impl KeptPicture {
+    fn of(src: &ImageSource, key: &str) -> Self {
+        let src = match src {
+            ImageSource::Remote(u) => u.clone(),
+            ImageSource::Cid(c) => format!("cid:{c}"),
+            ImageSource::Data(_) => "data".to_string(),
+        };
+        KeptPicture { key: key.to_string(), src }
+    }
+
+    fn source(&self) -> Option<ImageSource> {
+        match self.src.as_str() {
+            "data" => None,
+            s => source_of(s).filter(|s| !matches!(s, ImageSource::Data(_))),
+        }
+    }
+}
+
+/// The pictures a kept body says it shows - `None` for one kept before
+/// 2.115.0, which did not say.
+fn kept_pictures(json: Option<&str>) -> Option<Vec<KeptPicture>> {
+    let kept: KeptPictures = serde_json::from_str(json?).ok()?;
+    (kept.v >= 2).then_some(kept.pictures)
+}
+
+/// A picture that could not be copied is tried again when its message is
+/// opened - but not on every opening, for a server that just says no.
+fn picture_retry_due(message_id: i64) -> bool {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static TRIED: OnceLock<Mutex<HashMap<i64, Instant>>> = OnceLock::new();
+    let mut tried = TRIED.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(|e| e.into_inner());
+    let due = tried.get(&message_id).is_none_or(|at| at.elapsed() >= Duration::from_secs(5 * 60));
+    if due {
+        tried.insert(message_id, Instant::now());
+    }
+    due
+}
+
+/// Copies the pictures not in the folder yet: embedded ones through `cid`,
+/// web ones from the web (`remote`), several at a time.
+fn copy_pictures<F>(wanted: &[(ImageSource, String)], dir: &Path, remote: bool, cid: F)
+where
+    F: Fn(&str) -> Option<Vec<u8>> + Sync,
+{
+    let need: Vec<&(ImageSource, String)> = wanted.iter().filter(|(_, key)| !dir.join(key).exists()).collect();
+    if need.is_empty() {
+        return;
+    }
+    let total = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for chunk in need.chunks(need.len().div_ceil(PICTURE_WORKERS).max(1)) {
+            let (cid, total) = (&cid, &total);
+            scope.spawn(move || {
+                for (s, key) in chunk {
+                    let bytes = match s {
+                        ImageSource::Cid(c) => cid(c),
+                        ImageSource::Remote(url) if remote => fetch_remote_image(url).ok(),
+                        ImageSource::Remote(_) => None,
+                        ImageSource::Data(d) => d
+                            .split_once(";base64,")
+                            .and_then(|(_, b)| base64::engine::general_purpose::STANDARD.decode(b.trim()).ok()),
+                    };
+                    let Some(b) = bytes.filter(|b| b.len() <= MAX_IMAGE_BYTES && sniff_image(b).is_some()) else { continue };
+                    if total.fetch_add(b.len(), std::sync::atomic::Ordering::SeqCst) + b.len() <= MAX_IMAGE_TOTAL {
+                        let _ = std::fs::write(dir.join(key), &b);
+                    }
+                }
+            });
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -515,8 +670,21 @@ fn inline_images(html: &str, dir: &Path) -> (String, i64) {
 // ---------------------------------------------------------------------------
 
 const MAX_IMAGE_BYTES: usize = 3 * 1024 * 1024;
-const MAX_IMAGES_PER_MESSAGE: usize = 40;
-const MAX_IMAGE_TOTAL: usize = 15 * 1024 * 1024;
+/// 2.115.0: 150, up from 40 - a shop's mail with an icon for every line and
+/// every network went over 40, and the icons at its end never came (marko:
+/// "mensie obrazky v mailoch sa nezobrazuju").
+const MAX_IMAGES_PER_MESSAGE: usize = 150;
+const MAX_IMAGE_TOTAL: usize = 30 * 1024 * 1024;
+/// Pictures copied at once.
+const PICTURE_WORKERS: usize = 8;
+/// What TIQR says it is when it copies a picture: a browser, as a mail
+/// program's picture copier does. Some senders' servers turn away anything
+/// else, which leaves holes where their pictures belong; the picture is the
+/// same either way. It asks for the kinds every computer TIQR runs on can
+/// show - an AVIF sent anyway is still taken.
+const PICTURE_AGENT: &str =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15";
+const PICTURE_ACCEPT: &str = "image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8";
 /// A message bigger than this is shown as its text: a few MB of markup is a
 /// mail no one designed to be read, and it would only slow the screen down.
 const MAX_HTML_BYTES: usize = 2 * 1024 * 1024;
@@ -560,6 +728,14 @@ pub(crate) fn is_public_ip(ip: IpAddr) -> bool {
 /// One picture from the web: checked address, no redirect it did not check,
 /// at most `MAX_IMAGE_BYTES`, and a picture by its bytes.
 fn fetch_remote_image(url: &str) -> Result<Vec<u8>, String> {
+    fetch_picture(url, PICTURE_AGENT, MAX_IMAGE_BYTES)
+}
+
+/// `fetch_remote_image` with the caller's own name and size limit. 2.116.0:
+/// event pictures (commands/event_artwork.rs) come through the same checks -
+/// public address only, every redirect checked, a picture by its bytes - but
+/// introduce themselves honestly, as picture services ask.
+pub(crate) fn fetch_picture(url: &str, agent: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
     let mut current = url.to_string();
     for _ in 0..4 {
         let parsed = reqwest::Url::parse(&current).map_err(|_| "not a web address".to_string())?;
@@ -571,17 +747,25 @@ fn fetch_remote_image(url: &str) -> Result<Vec<u8>, String> {
         if port != 80 && port != 443 {
             return Err("an unusual port".to_string());
         }
-        let addrs: Vec<SocketAddr> = (host.as_str(), port).to_socket_addrs().map_err(|_| "unknown host".to_string())?.collect();
+        let mut addrs: Vec<SocketAddr> = (host.as_str(), port).to_socket_addrs().map_err(|_| "unknown host".to_string())?.collect();
         if addrs.is_empty() || addrs.iter().any(|a| !is_public_ip(a.ip())) {
             return Err("not on the public internet".to_string());
         }
-        // The connection goes to the address that was checked, not to
-        // whatever the name resolves to a moment later.
+        // The connection goes to the addresses that were checked, not to
+        // whatever the name resolves to a moment later - every one of them,
+        // the IPv4 ones first: a computer whose IPv6 goes nowhere still gets
+        // the picture (2.115.0; before, only the first address was tried).
+        addrs.sort_by_key(|a| a.is_ipv6());
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::ACCEPT, reqwest::header::HeaderValue::from_static(PICTURE_ACCEPT));
+        headers.insert(reqwest::header::ACCEPT_LANGUAGE, reqwest::header::HeaderValue::from_static("en"));
         let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(15))
+            .connect_timeout(Duration::from_secs(5))
             .redirect(reqwest::redirect::Policy::none())
-            .resolve(&host, addrs[0])
-            .user_agent("Mozilla/5.0 (compatible; TIQR Manager)")
+            .resolve_to_addrs(&host, &addrs)
+            .user_agent(agent)
+            .default_headers(headers)
             .build()
             .map_err(|e| e.to_string())?;
         let resp = client.get(parsed.clone()).send().map_err(|_| "no answer".to_string())?;
@@ -599,8 +783,8 @@ fn fetch_remote_image(url: &str) -> Result<Vec<u8>, String> {
             return Err(format!("answered {}", status.as_u16()));
         }
         let mut bytes = Vec::new();
-        resp.take(MAX_IMAGE_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|_| "cut off".to_string())?;
-        if bytes.len() > MAX_IMAGE_BYTES {
+        resp.take(max_bytes as u64 + 1).read_to_end(&mut bytes).map_err(|_| "cut off".to_string())?;
+        if bytes.len() > max_bytes {
             return Err("too big".to_string());
         }
         if sniff_image(&bytes).is_none() {
@@ -682,7 +866,7 @@ fn remote_images_on(conn: &Connection) -> bool {
 struct Fetched {
     html: Option<String>,
     text: String,
-    images: Vec<(String, ImageSource)>,
+    pictures: Vec<KeptPicture>,
     left_out: i64,
     attachments: Vec<Part>,
 }
@@ -698,7 +882,7 @@ fn fetch_message(mb: &Mailbox, gmail_id: &str, message_id: i64, dir: &Path, remo
         _ => snippet,
     };
     let text = mail::clip_chars(&text, MAX_TEXT_CHARS);
-    let mut images: Vec<(String, ImageSource)> = Vec::new();
+    let mut pictures: Vec<KeptPicture> = Vec::new();
     let mut left_out = 0i64;
     let mut html = None;
     if let Some(raw_html) = parts.html.as_ref().filter(|h| h.len() <= MAX_HTML_BYTES) {
@@ -715,9 +899,9 @@ fn fetch_message(mb: &Mailbox, gmail_id: &str, message_id: i64, dir: &Path, remo
                 _ => left_out += 1,
             }
         }
-        // Copy what is not in the folder yet: embedded ones from the message,
-        // web ones from the web, a few at a time.
-        let mut total = 0usize;
+        // 2.115.0: every picture it shows keeps its place in the copy kept,
+        // copied now or not - one that does not come now is tried again when
+        // the message is opened again, instead of being lost from it.
         let jobs: Vec<(String, ImageSource, String)> = sources
             .into_iter()
             .map(|(src, s)| {
@@ -725,60 +909,29 @@ fn fetch_message(mb: &Mailbox, gmail_id: &str, message_id: i64, dir: &Path, remo
                 (src, s, key)
             })
             .collect();
-        let need: Vec<&(String, ImageSource, String)> = jobs.iter().filter(|(_, _, key)| !img_dir.join(key).exists()).collect();
+        let wanted: Vec<(ImageSource, String)> = jobs.iter().map(|(_, s, key)| (s.clone(), key.clone())).collect();
         let attachments = &parts.attachments;
-        let fetched: Vec<(String, Option<Vec<u8>>)> = std::thread::scope(|scope| {
-            let handles: Vec<_> = need
-                .chunks(need.len().div_ceil(4).max(1))
-                .map(|chunk| {
-                    scope.spawn(move || {
-                        chunk
-                            .iter()
-                            .map(|(_, s, key)| {
-                                let bytes = match s {
-                                    ImageSource::Cid(cid) => attachments
-                                        .iter()
-                                        .find(|p| p.content_id.as_deref() == Some(cid.as_str()))
-                                        .and_then(|p| match (&p.data, &p.attachment_id) {
-                                            (Some(d), _) => b64url_bytes(d),
-                                            (None, Some(aid)) => attachment_bytes(mb, gmail_id, aid).ok(),
-                                            _ => None,
-                                        }),
-                                    ImageSource::Remote(url) if remote => fetch_remote_image(url).ok(),
-                                    ImageSource::Remote(_) => None,
-                                    ImageSource::Data(d) => d
-                                        .split_once(";base64,")
-                                        .and_then(|(_, b)| base64::engine::general_purpose::STANDARD.decode(b.trim()).ok()),
-                                };
-                                (key.clone(), bytes.filter(|b| b.len() <= MAX_IMAGE_BYTES && sniff_image(b).is_some()))
-                            })
-                            .collect::<Vec<_>>()
-                    })
+        copy_pictures(&wanted, &img_dir, remote, |cid| {
+            attachments
+                .iter()
+                .find(|p| p.content_id.as_deref().is_some_and(|c| same_cid(c, cid)))
+                .and_then(|p| match (&p.data, &p.attachment_id) {
+                    (Some(d), _) => b64url_bytes(d),
+                    (None, Some(aid)) => attachment_bytes(mb, gmail_id, aid).ok(),
+                    _ => None,
                 })
-                .collect();
-            handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
         });
-        for (key, bytes) in fetched {
-            match bytes {
-                Some(b) if total + b.len() <= MAX_IMAGE_TOTAL => {
-                    total += b.len();
-                    let _ = std::fs::write(img_dir.join(&key), &b);
-                }
-                _ => {}
-            }
-        }
         let mut kept: HashMap<String, String> = HashMap::new();
         for (src, s, key) in jobs {
-            if img_dir.join(&key).exists() {
-                kept.insert(src.clone(), key);
-                images.push((src, s));
-            } else {
+            if !img_dir.join(&key).exists() {
                 left_out += 1;
             }
+            pictures.push(KeptPicture::of(&s, &key));
+            kept.insert(src, key);
         }
         html = Some(clean_with_images(raw_html, &kept));
     }
-    Ok(Fetched { html, text, images, left_out, attachments: parts.attachments })
+    Ok(Fetched { html, text, pictures, left_out, attachments: parts.attachments })
 }
 
 fn attachment_infos(conn: &Connection, id: i64) -> AppResult<Vec<MailAttachmentInfo>> {
@@ -876,26 +1029,38 @@ pub(crate) fn detect_language(text: &str) -> Option<&'static str> {
     (top >= 3.0 && top >= second * 1.4).then_some(best)
 }
 
+/// A body kept from an earlier opening.
+struct KeptBody {
+    html: Option<String>,
+    text: String,
+    pictures: Option<Vec<KeptPicture>>,
+}
+
 /// Opens one message for reading: TIQR's own copy when it has one, else from
 /// Gmail - cleaned, pictures copied in, attachments listed - and kept.
-/// Opening it marks it read, in TIQR only.
+/// Opening it marks it read, in TIQR only - unless marko chose to mark mail
+/// read later or by hand (Mail -> Settings -> Reading, 2.115.0).
 #[tauri::command]
 pub async fn get_mail_view(state: State<'_, AppState>, id: i64, refresh: Option<bool>) -> AppResult<MailView> {
     let refresh = refresh.unwrap_or(false);
-    let (gmail_id, labels, cached, dir, remote, token) = {
+    let (gmail_id, labels, kept, dir, remote, token) = {
         let conn = state.db.lock().unwrap();
         let (gmail_id, labels, _) = message_row(&conn, id)?;
-        conn.execute("UPDATE mail_messages SET is_unread = 0 WHERE id = ?1", [id])?;
-        let cached: Option<(Option<String>, String)> = if refresh {
+        if mail::marks_read_on_open(&conn) {
+            conn.execute("UPDATE mail_messages SET is_unread = 0 WHERE id = ?1", [id])?;
+        }
+        let kept: Option<KeptBody> = if refresh {
             None
         } else {
-            conn.query_row("SELECT html, text FROM mail_bodies WHERE message_id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
-                .optional()?
+            conn.query_row("SELECT html, text, images FROM mail_bodies WHERE message_id = ?1", [id], |r| {
+                Ok(KeptBody { html: r.get(0)?, text: r.get(1)?, pictures: kept_pictures(r.get::<_, Option<String>>(2)?.as_deref()) })
+            })
+            .optional()?
         };
         (
             gmail_id,
             labels.clone(),
-            cached,
+            kept,
             files_dir(&conn)?,
             remote_images_on(&conn) && !is_untrusted(&labels),
             crate::secrets::get(&conn, MAIL_REFRESH_TOKEN_KEY)?,
@@ -903,45 +1068,33 @@ pub async fn get_mail_view(state: State<'_, AppState>, id: i64, refresh: Option<
     };
     let img_dir = dir.join("img");
 
-    if let Some((html, text)) = cached {
-        let (html, shown) = match html {
-            Some(h) => {
-                let (h, n) = inline_images(&h, &img_dir);
-                (Some(h), n)
-            }
-            None => (None, 0),
-        };
-        let conn = state.db.lock().unwrap();
-        return Ok(MailView {
-            html,
-            language: detect_language(&text).map(str::to_string),
-            facts: facts_for(&conn, id, &text),
-            text,
-            attachments: attachment_infos(&conn, id)?,
-            images_copied: shown,
-            images_left_out: 0,
-            from_cache: true,
-        });
+    // 2.115.0: a copy kept before pictures were remembered one by one, which
+    // lost one, is downloaded again - once, for it then remembers them. If
+    // Gmail cannot be reached, the old copy is shown as it is.
+    let (kept, fallback) = match kept {
+        Some(k) if k.pictures.is_none() && token.is_some() && k.html.as_deref().is_some_and(lost_pictures) => (None, Some(k)),
+        other => (other, None),
+    };
+    if let Some(k) = kept {
+        return kept_view(&state, id, k, img_dir, remote, gmail_id, token).await;
     }
 
     let dir_for_task = dir.clone();
+    let (gmail_for_task, token_for_task) = (gmail_id.clone(), token.clone());
     let fetched = tauri::async_runtime::spawn_blocking(move || -> AppResult<Fetched> {
-        let mb = mailbox(token)?;
-        fetch_message(&mb, &gmail_id, id, &dir_for_task, remote)
+        let mb = mailbox(token_for_task)?;
+        fetch_message(&mb, &gmail_for_task, id, &dir_for_task, remote)
     })
     .await
-    .map_err(|_| AppError::External("the message did not finish loading".to_string()))??;
+    .map_err(|_| AppError::External("the message did not finish loading".to_string()))
+    .and_then(|r| r);
+    let fetched = match (fetched, fallback) {
+        (Ok(f), _) => f,
+        (Err(_), Some(k)) => return kept_view(&state, id, k, img_dir, remote, gmail_id, token).await,
+        (Err(e), None) => return Err(e),
+    };
 
-    let images_json = serde_json::to_string(
-        &fetched
-            .images
-            .iter()
-            .map(|(src, s)| {
-                json!({ "key": image_key(s, id), "src": match s { ImageSource::Data(_) => "data", _ => src.as_str() } })
-            })
-            .collect::<Vec<_>>(),
-    )
-    .ok();
+    let images_json = serde_json::to_string(&KeptPictures { v: 2, pictures: fetched.pictures.clone() }).ok();
     {
         let conn = state.db.lock().unwrap();
         let tx = conn.unchecked_transaction()?;
@@ -956,7 +1109,8 @@ pub async fn get_mail_view(state: State<'_, AppState>, id: i64, refresh: Option<
                 "INSERT INTO mail_attachments (message_id, part_id, filename, declared_mime, size, gmail_attachment_id, content_id, is_inline)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT(message_id, part_id) DO UPDATE SET gmail_attachment_id = excluded.gmail_attachment_id,
-                        filename = excluded.filename, declared_mime = excluded.declared_mime, size = excluded.size",
+                        filename = excluded.filename, declared_mime = excluded.declared_mime, size = excluded.size,
+                        content_id = excluded.content_id",
                 params![id, p.part_id, safe_filename(&p.filename), p.mime, p.size, p.attachment_id, p.content_id, i64::from(p.inline)],
             )?;
         }
@@ -977,7 +1131,7 @@ pub async fn get_mail_view(state: State<'_, AppState>, id: i64, refresh: Option<
     }
     let (html, shown) = match &fetched.html {
         Some(h) => {
-            let (h, n) = inline_images(h, &img_dir);
+            let (h, n, _) = inline_images(h, &img_dir);
             (Some(h), n)
         }
         None => (None, 0),
@@ -992,6 +1146,70 @@ pub async fn get_mail_view(state: State<'_, AppState>, id: i64, refresh: Option<
         images_copied: shown,
         images_left_out: fetched.left_out,
         from_cache: false,
+    })
+}
+
+/// A message from TIQR's own copy. A picture that did not come before is
+/// tried again first (at most every few minutes): from the web, or from
+/// Gmail for one embedded in the message.
+async fn kept_view(
+    state: &State<'_, AppState>,
+    id: i64,
+    kept: KeptBody,
+    img_dir: PathBuf,
+    remote: bool,
+    gmail_id: String,
+    token: Option<String>,
+) -> AppResult<MailView> {
+    let KeptBody { html, text, pictures } = kept;
+    let (mut copied, mut left_out) = (0i64, 0i64);
+    let html = match html {
+        Some(h) => {
+            let (_, _, missing) = inline_images(&h, &img_dir);
+            let jobs: Vec<(ImageSource, String)> = pictures
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|p| missing.contains(&p.key))
+                .filter_map(|p| p.source().map(|s| (s, p.key)))
+                .collect();
+            if !jobs.is_empty() && picture_retry_due(id) {
+                let embedded: Vec<(String, String)> = {
+                    let conn = state.db.lock().unwrap();
+                    let mut stmt = conn.prepare(
+                        "SELECT content_id, gmail_attachment_id FROM mail_attachments
+                          WHERE message_id = ?1 AND content_id IS NOT NULL AND gmail_attachment_id IS NOT NULL",
+                    )?;
+                    let rows = stmt.query_map([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+                    rows.collect::<Result<_, _>>()?
+                };
+                let dir = img_dir.clone();
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    let mb = if jobs.iter().any(|(s, _)| matches!(s, ImageSource::Cid(_))) { mailbox(token).ok() } else { None };
+                    copy_pictures(&jobs, &dir, remote, |cid| {
+                        let mb = mb.as_ref()?;
+                        let (_, aid) = embedded.iter().find(|(c, _)| same_cid(c, cid))?;
+                        attachment_bytes(mb, &gmail_id, aid).ok()
+                    });
+                })
+                .await;
+            }
+            let (h, n, still) = inline_images(&h, &img_dir);
+            copied = n;
+            left_out = still.len() as i64;
+            Some(h)
+        }
+        None => None,
+    };
+    let conn = state.db.lock().unwrap();
+    Ok(MailView {
+        html,
+        language: detect_language(&text).map(str::to_string),
+        facts: facts_for(&conn, id, &text),
+        text,
+        attachments: attachment_infos(&conn, id)?,
+        images_copied: copied,
+        images_left_out: left_out,
+        from_cache: true,
     })
 }
 
@@ -1645,10 +1863,74 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0];
         std::fs::write(dir.join("abc123"), png).unwrap();
-        let (shown, n) = inline_images(&out, &dir);
-        assert_eq!(n, 1);
+        let (shown, n, missing) = inline_images(&out, &dir);
+        assert_eq!((n, missing.len()), (1, 0));
         assert!(shown.contains("src=\"data:image/png;base64,"), "{shown}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_picture_that_did_not_come_keeps_its_place_and_shows_once_it_is_copied() {
+        // marko: "mensie obrazky v mailoch sa nezobrazuju" - a picture that
+        // did not come the first time used to be gone from the kept copy.
+        let mut kept = HashMap::new();
+        kept.insert("https://shop.example/logo.png".to_string(), "aa11".to_string());
+        kept.insert("https://shop.example/icon.png".to_string(), "bb22".to_string());
+        let html = clean_with_images(
+            r#"<img src="https://shop.example/logo.png" width="600"><img src="https://shop.example/icon.png" width="24" alt="info">"#,
+            &kept,
+        );
+        assert!(!lost_pictures(&html), "both keep their place: {html}");
+        let dir = std::env::temp_dir().join(format!("tiqr-img-retry-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0];
+        std::fs::write(dir.join("aa11"), png).unwrap();
+        let (shown, n, missing) = inline_images(&html, &dir);
+        assert_eq!((n, missing), (1, vec!["bb22".to_string()]));
+        assert!(shown.contains("src=\"\"") && shown.contains("alt=\"info\""), "empty, saying what it is: {shown}");
+
+        // Tried again: copied this time, and shown.
+        let wanted = vec![(ImageSource::Data(format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png))), "bb22".to_string())];
+        copy_pictures(&wanted, &dir, false, |_| None);
+        let (_, n, missing) = inline_images(&html, &dir);
+        assert_eq!((n, missing.len()), (2, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_copy_kept_before_remembers_nothing_and_one_that_lost_a_picture_is_found() {
+        assert_eq!(kept_pictures(Some(r#"[{"key":"aa","src":"https://x.example/a.png"}]"#)), None, "before 2.115.0");
+        assert_eq!(kept_pictures(None), None);
+        let now = serde_json::to_string(&KeptPictures { v: 2, pictures: vec![KeptPicture { key: "aa".into(), src: "cid:logo".into() }] }).unwrap();
+        let got = kept_pictures(Some(&now)).unwrap();
+        assert_eq!(got[0].source(), Some(ImageSource::Cid("logo".into())));
+        assert_eq!(KeptPicture { key: "x".into(), src: "data".into() }.source(), None, "never missing");
+        assert!(lost_pictures(r#"<p>Hi</p><img alt="Logo" width="80">"#));
+        assert!(!lost_pictures(r#"<img src="tiqr-img:aa">"#));
+    }
+
+    #[test]
+    fn pictures_are_found_however_their_source_is_written() {
+        assert_eq!(source_of("//cdn.example/i.png"), Some(ImageSource::Remote("https://cdn.example/i.png".into())));
+        assert_eq!(source_of(" CID:<logo@x> "), Some(ImageSource::Cid("logo@x".into())));
+        assert_eq!(source_of("/relative/i.png"), None);
+        assert!(same_cid("image001.png@01D9C0A1", "image001.png%4001D9C0A1"), "%-encoded as the standard says");
+        assert!(same_cid("Logo@Shop", "logo@shop"));
+        assert!(!same_cid("logo@shop", "icon@shop"));
+        assert!(!same_cid("a", "%zz"));
+    }
+
+    #[test]
+    fn an_avif_picture_is_a_picture_and_a_video_is_not() {
+        let mut avif = vec![0, 0, 0, 0x1c];
+        avif.extend_from_slice(b"ftypavif\0\0\0\0avifmif1miaf");
+        assert_eq!(sniff_image(&avif), Some("image/avif"));
+        let mut compatible = vec![0, 0, 0, 0x18];
+        compatible.extend_from_slice(b"ftypmif1\0\0\0\0avifmiaf");
+        assert_eq!(sniff_image(&compatible), Some("image/avif"));
+        let mut mp4 = vec![0, 0, 0, 0x18];
+        mp4.extend_from_slice(b"ftypisom\0\0\0\0isomiso2");
+        assert_eq!(sniff_image(&mp4), None);
     }
 
     #[test]

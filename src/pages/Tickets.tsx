@@ -24,6 +24,7 @@ import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { useToast } from "../lib/toast";
 import { useListTab } from "../lib/useListTab";
 import { useNarrowTables } from "../lib/useNarrowTables";
+import { quietly } from "../lib/diagnostics";
 
 // 2.0.59: "Active" vs "Completed" tabs (marko's request - see
 // REDESIGN-2.0.59-REPORT.md). Reuses inventoryStatus() below - the exact
@@ -173,9 +174,9 @@ export function TicketsView({
   const [tab, setTab] = useListTab("ticketsTab", ["active", "completed"] as const);
 
   useEffect(() => {
-    api.listEvents().then(setEvents).catch(() => {});
-    api.listPlatforms().then(setPlatforms).catch(() => {});
-    api.listEventCategories().then(setCategories).catch(() => {});
+    api.listEvents().then(setEvents).catch(quietly("Tickets: listEvents"));
+    api.listPlatforms().then(setPlatforms).catch(quietly("Tickets: listPlatforms"));
+    api.listEventCategories().then(setCategories).catch(quietly("Tickets: listEventCategories"));
   }, []);
 
   // 1.8.3 (section 8): persist this page's own filters (see

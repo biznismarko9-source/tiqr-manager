@@ -45,8 +45,8 @@
 //! must never touch a cache table again. A change to this schema is a new
 //! `user_version` step in `ensure`, not a numbered migration - `SCHEMA_V1`
 //! (2.110.0), `SCHEMA_V2` (2.111.0), `SCHEMA_V3` (2.113.0), `SCHEMA_V4`
-//! (2.113.1) and `SCHEMA_V5` (2.114.3) so far, and a released step is never
-//! edited, only followed by the next one.
+//! (2.113.1), `SCHEMA_V5` (2.114.3) and `SCHEMA_V6` (2.115.0) so far, and a
+//! released step is never edited, only followed by the next one.
 use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
@@ -139,6 +139,12 @@ pub fn ensure(conn: &Connection) -> rusqlite::Result<()> {
         let tx = conn.unchecked_transaction()?;
         tx.execute_batch(SCHEMA_V5)?;
         tx.execute_batch("PRAGMA mail.user_version = 5;")?;
+        tx.commit()?;
+    }
+    if version < 6 {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(SCHEMA_V6)?;
+        tx.execute_batch("PRAGMA mail.user_version = 6;")?;
         tx.commit()?;
     }
     relocate(conn)?;
@@ -496,6 +502,23 @@ ALTER TABLE mail.mail_sync_state ADD COLUMN trouble_streak INTEGER NOT NULL DEFA
 /// maile kde je nejaky attachment tak ten tiez dat do tiqr", "aj obrazky co
 /// su v maily tak prekopirj do tiqr", and "AI nesmie rozhodovat naslepo -
 /// kazdy navrh musi mat zdrojove udaje, mieru istoty a kontrolu duplicit".
+const SCHEMA_V6: &str = r#"
+-- 2.115.0: two computers, one Gmail reader (commands/mail_share.rs). What one
+-- computer sends the other goes out in (labels_at, id) order; a row from
+-- before 2.110.0 has no labels_at yet and takes the time it was first seen.
+UPDATE mail.mail_messages SET labels_at = first_seen_at WHERE labels_at IS NULL;
+CREATE INDEX IF NOT EXISTS mail.idx_mail_shared ON mail_messages (labels_at, id);
+-- How far this computer has got with what each other computer sent it: up to
+-- that computer's (labels_at, id), and how many messages so far.
+CREATE TABLE IF NOT EXISTS mail.mail_share_cursors (
+    sender     TEXT PRIMARY KEY,
+    at         TEXT NOT NULL,
+    id         INTEGER NOT NULL,
+    received   INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+"#;
+
 const SCHEMA_V5: &str = r#"
 -- 2.114.3: when Gmail refused to list a folder at all. It is tried again a
 -- few hours later instead of counting as read to the end for good
@@ -639,7 +662,7 @@ mod tests {
         crate::db::run_migrations(&conn).unwrap();
 
         let version: i64 = conn.query_row("PRAGMA mail.user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM mail_messages", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 2, "every message is still here");
         let (labels, starred): (String, i64) = conn
@@ -701,7 +724,7 @@ mod tests {
 
         crate::db::run_migrations(&conn).unwrap();
         let version: i64 = conn.query_row("PRAGMA mail.user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM mail_messages", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 2);
         let moved: Option<String> =

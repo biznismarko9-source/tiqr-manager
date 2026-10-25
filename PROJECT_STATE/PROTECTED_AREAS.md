@@ -21,6 +21,87 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.116.0 - event pictures, diagnostics, atomic migrations
+
+- **`event_artworks` rows are never DELETEd.** The uid is derived from the
+  subject key (`artwork_uid`), and a deleted uid can never come back
+  (migration 028: a deletion wins over any later edit) - "back to
+  automatic" is `state = 'auto'`. Anything that cleans the table up must
+  update, never delete. The derivation itself (`event_artworks\0` + key,
+  SHA-256, first 16 bytes) must never change, or two computers stop
+  meeting in one record.
+- **`artwork_lookups` must never go into MERGE_TABLES.** It holds what the
+  services answered and the automatic pick; kept local, a late or wrong
+  automatic answer can never arrive on the other computer and replace a
+  picture chosen there by hand. It is also bookkeeping in
+  `db::is_bookkeeping_table` (an answer is not marko's change).
+- **The subject key does not depend on the category** (`subject_for`):
+  changing a category must never orphan a choice. Only the SEARCH depends
+  on it. A change to the name folding (`norm`) re-keys every subject - treat
+  it like a migration.
+- **No network under the database lock, and none on the window's thread**
+  (`suggest_with`, `backfill_with`, `detect_event_categories`): read, let
+  go, ask, then lock again to write - and write only what is still true
+  (`category_id IS NULL`, a failure never replacing a certain answer).
+- **Table rows keep their height.** The picture sizes carry negative
+  vertical margins (`EventArt` `row`, and `-my-0.5` / `-my-1` in Events and
+  Sales); measured before and after: Events 48, Inventory 32, Sales 46 px.
+- **`db::apply_migrations` wraps each migration with its record in one
+  transaction** - except a migration holding its own `BEGIN TRANSACTION`
+  (004, 017, 020, 027-030), because SQLite has no nested BEGIN. A new
+  migration should not carry its own BEGIN; it gets one.
+- **Every log line goes through `diag::redact`**, and the panic hook must
+  never wait for a lock (`try_lock`) - the panic may have happened while
+  that same thread was writing.
+- **Escape is decided once per key press** (`ui.tsx`, `listenForEscape`):
+  one listener per dialog closed the top dialog, React re-drew between
+  listeners, and the next one found itself on top and closed too.
+
+## 2.115.1 - a sale's row and seats are a spoiler
+
+- **Escape first, then wrap in `||`** (`seat_lines`). A row or seat that
+  carries `||` must never close the spoiler early - the test
+  `hidden_seats_keep_the_section_in_sight_and_nothing_can_close_the_spoiler`
+  holds that.
+- **`DiscordSaleConfig` defaults to hiding** - a config without the block
+  (every config before 2.115.1) hides. Keep the default on its own
+  `Default` impl: the derived `Default` of `DiscordChannelConfig` calls it.
+
+## 2.115.0 - one Gmail reader for two computers; pictures keep their place
+
+- **Only the lease holder reads Gmail; a follower's reader stands by**
+  (`mail_sync::following`). Whatever goes wrong with Firebase - refused,
+  unreachable, the daily limit - the session goes `solo` and this computer
+  reads Gmail itself. Never leave a computer standing by on a lease nobody
+  renews: `FOLLOWING_FOR_MS` must stay longer than the tick, and `stop()`
+  must turn following off.
+- **"Lately" is measured by this computer's own clock against what it saw
+  change** (`seeLease`, `presentUntil`) - never by comparing the other
+  computer's server timestamp with local time, except for the 15-minute
+  "abandoned" rule and a cursor's first look. Two clocks that disagree must
+  never have both computers taking the lease in turns.
+- **A batch is stored, the cursor moved, the batch deleted - in that order**,
+  and a batch that can never be stored is deleted too. Nothing may pile up
+  in Firestore: stop-and-wait per follower, one batch in flight.
+- **What travels is what Gmail gave** (`SharedMail`) plus the extract text.
+  Never a category, an OTP code as such, a local move, a record. The
+  receiving side re-checks every field (`checked`) and reads each message
+  itself; it never announces "mail arrived" on Discord.
+- **A follower's first cursor is written down once** (`first_cursor` via
+  `cursor`) - computing it again later could skip mail. A mailbox that is
+  not read through starts from the beginning.
+- **firestore.rules must be published by hand** for any of this to work;
+  the app says so ("Firebase refused - publish the new firestore.rules").
+- **Pictures: a wanted picture keeps its token** in the kept body even when
+  it did not come, and `mail_bodies.images` (v2) says where each comes from
+  - that is what lets `kept_view` try again. Pictures are fetched by TIQR
+  only, never by the message's frame.
+- **The Delete key only ever moves a message to the Trash** - never in the
+  Trash, never "Delete forever".
+- **No BigInt in the frontend** (`mailShareCore.ts::leaseId` is two 32-bit
+  halves): the Mac build targets Safari 13, and `vite build` fails on a
+  BigInt literal.
+
 ## 2.114.3 - the mail reader is a thread; reading progress is precious
 
 - **The reader runs in the backend** (`mail_sync::start_reader`), not on a

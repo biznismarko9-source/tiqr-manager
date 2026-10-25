@@ -1674,6 +1674,24 @@ pub struct DiscordChannelConfig {
     pub auto: DiscordAutoConfig,
     /// 2.114.0: which mail is passed on, and what its message carries.
     pub mail_options: DiscordMailConfig,
+    /// 2.115.1: how a sale's message looks.
+    pub sale_options: DiscordSaleConfig,
+}
+
+/// 2.115.1: marko - "ak pride new sale tak vo webhooku by malo byt hide row a
+/// seats". A missing block (every config before 2.115.1) hides them.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DiscordSaleConfig {
+    /// The row and the seats as a spoiler, shown on a click; the section
+    /// stays in sight. Off: shown as before.
+    pub hide_seats: bool,
+}
+
+impl Default for DiscordSaleConfig {
+    fn default() -> Self {
+        DiscordSaleConfig { hide_seats: true }
+    }
 }
 
 /// 2.114.0: marko - "co posielat dalej, ako posielat". Which kinds of mail
@@ -1839,6 +1857,8 @@ pub struct NotificationStatus {
     pub discord_auto: DiscordAutoConfig,
     /// 2.114.0.
     pub discord_mail_options: DiscordMailConfig,
+    /// 2.115.1.
+    pub discord_sale_options: DiscordSaleConfig,
 }
 
 /// What Settings -> Notifications sends to the SET command. The secret
@@ -1885,6 +1905,9 @@ pub struct NotificationConfigInput {
     /// 2.114.0.
     #[serde(default)]
     pub discord_mail_options: Option<DiscordMailConfig>,
+    /// 2.115.1.
+    #[serde(default)]
+    pub discord_sale_options: Option<DiscordSaleConfig>,
 }
 
 /// Result of a "Send test" click in Settings -> Notifications (one per
@@ -3473,6 +3496,23 @@ pub struct MailConnectionStatus {
     /// 2.114.0: folders TIQR does not read at all - "promotions", "spam",
     /// "trash" (Settings, What is read).
     pub skip_folders: Vec<String>,
+    /// 2.115.0: two computers share the reading - while both run, one reads
+    /// Gmail and sends the other the mail (commands/mail_share.rs).
+    pub share_reading: bool,
+    /// 2.115.0: how the Mail screen behaves, the same on both computers -
+    /// when an opened message counts as read ("open", "delay", "manual"),
+    /// what opens after the open one is moved or deleted ("list", "older",
+    /// "newer"), how the list looks, the folder Mail opens in ("inbox",
+    /// "important", "starred", "last") and whether the keys work.
+    pub mark_read: String,
+    pub after_move: String,
+    pub list_preview: bool,
+    pub list_tags: bool,
+    pub list_compact: bool,
+    pub start_folder: String,
+    pub shortcuts: bool,
+    /// 2.115.0: how fast THIS computer reads Gmail - "full" or "gentle".
+    pub read_speed: String,
     pub unread_count: i64,
     /// "off" | "manual" | "auto", per record kind. `manual` is the default
     /// and the one marko described: the proposal waits for his button.

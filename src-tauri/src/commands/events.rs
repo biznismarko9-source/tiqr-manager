@@ -352,9 +352,13 @@ pub fn bulk_delete_events(state: State<AppState>, ids: Vec<i64>) -> AppResult<Bu
 /// after more events have synced in, always safe - exactly the same "safe
 /// to click repeatedly" property "Fix sync" (2.0.60) already holds itself
 /// to.
-fn detect_event_categories_impl(conn: &Connection) -> AppResult<CategoryDetectionResult> {
-    let ai_configured = crate::ai_categorize::embedded_anthropic_api_key().is_some();
-    let rows: Vec<(i64, String)> = {
+/// Ids with their names - events or categories.
+type Named = Vec<(i64, String)>;
+
+/// What "Detect categories" works on: every event without a category, and
+/// the categories there are.
+fn to_detect(conn: &Connection) -> AppResult<(Named, Named)> {
+    let rows = {
         let mut stmt =
             conn.prepare("SELECT id, name FROM events WHERE category_id IS NULL AND trim(name) <> ''")?;
         let collected = stmt
@@ -362,39 +366,90 @@ fn detect_event_categories_impl(conn: &Connection) -> AppResult<CategoryDetectio
             .collect::<rusqlite::Result<Vec<_>>>()?;
         collected
     };
+    let categories = {
+        let mut stmt = conn.prepare("SELECT id, name FROM event_categories")?;
+        let collected = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        collected
+    };
+    Ok((rows, categories))
+}
 
+/// Writes what was found - only onto an event that still has no category: a
+/// category picked by hand while the AI was being asked is never replaced.
+fn apply_detected(
+    conn: &Connection,
+    checked: usize,
+    found: &[(i64, crate::ai_categorize::CategoryMatch)],
+    ai_configured: bool,
+) -> AppResult<CategoryDetectionResult> {
     let mut categorized_by_rule = 0i64;
     let mut categorized_by_ai = 0i64;
-    let mut left_uncategorized = 0i64;
-    for (id, name) in &rows {
-        match crate::ai_categorize::detect_category_for_event_name(conn, name) {
-            Some(m) => {
-                conn.execute(
-                    "UPDATE events SET category_id = ?1, category = ?2 WHERE id = ?3",
-                    params![m.id, m.name, id],
-                )?;
-                if m.via_ai {
-                    categorized_by_ai += 1;
-                } else {
-                    categorized_by_rule += 1;
-                }
+    let tx = conn.unchecked_transaction()?;
+    for (id, m) in found {
+        let n = tx.execute(
+            "UPDATE events SET category_id = ?1, category = ?2 WHERE id = ?3 AND category_id IS NULL",
+            params![m.id, m.name, id],
+        )?;
+        if n == 1 {
+            if m.via_ai {
+                categorized_by_ai += 1;
+            } else {
+                categorized_by_rule += 1;
             }
-            None => left_uncategorized += 1,
         }
     }
+    tx.commit()?;
+    let resolved = categorized_by_rule + categorized_by_ai;
     Ok(CategoryDetectionResult {
-        checked: rows.len() as i64,
+        checked: checked as i64,
         categorized_by_rule,
         categorized_by_ai,
-        left_uncategorized,
+        left_uncategorized: checked as i64 - resolved,
         ai_configured,
     })
 }
 
+#[cfg(test)]
+fn detect_event_categories_impl(conn: &Connection) -> AppResult<CategoryDetectionResult> {
+    let key = crate::ai_categorize::embedded_anthropic_api_key();
+    let (rows, categories) = to_detect(conn)?;
+    let found: Vec<(i64, crate::ai_categorize::CategoryMatch)> = rows
+        .iter()
+        .filter_map(|(id, name)| {
+            crate::ai_categorize::detect_category_among(name, &categories, key.as_deref()).map(|m| (*id, m))
+        })
+        .collect();
+    apply_detected(conn, rows.len(), &found, key.is_some())
+}
+
+/// 2.116.0: no longer on the window's own thread, and the database is held
+/// only to read and to write. Before, this command ran on the thread that
+/// draws the window and kept the database locked while it waited for the AI
+/// once per event - fifty events without a category froze the whole app for
+/// as long as fifty answers took, up to 20 seconds each.
 #[tauri::command]
-pub fn detect_event_categories(state: State<AppState>) -> AppResult<CategoryDetectionResult> {
-    let conn = state.db.lock().unwrap();
-    detect_event_categories_impl(&conn)
+pub async fn detect_event_categories(app: tauri::AppHandle) -> AppResult<CategoryDetectionResult> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let state = app.state::<AppState>();
+        let key = crate::ai_categorize::embedded_anthropic_api_key();
+        let (rows, categories) = {
+            let conn = state.db.lock().unwrap();
+            to_detect(&conn)?
+        };
+        let found: Vec<(i64, crate::ai_categorize::CategoryMatch)> = rows
+            .iter()
+            .filter_map(|(id, name)| {
+                crate::ai_categorize::detect_category_among(name, &categories, key.as_deref()).map(|m| (*id, m))
+            })
+            .collect();
+        let conn = state.db.lock().unwrap();
+        apply_detected(&conn, rows.len(), &found, key.is_some())
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("category detection stopped: {e}")))?
 }
 
 #[cfg(test)]
@@ -598,6 +653,38 @@ mod tests {
         assert_eq!(result.categorized_by_ai, 0);
         assert_eq!(result.left_uncategorized, 1);
         assert!(!result.ai_configured, "this test build never has ANTHROPIC_API_KEY set");
+    }
+
+    /// 2.116.0: the AI is asked with the database let go - so a category
+    /// can be picked by hand in the meantime, and that one stays.
+    #[test]
+    fn a_category_picked_by_hand_while_the_ai_was_asked_is_never_replaced() {
+        let conn = test_conn();
+        let id = seed_event_named(&conn, "Reading Festival");
+        let (rows, categories) = to_detect(&conn).unwrap();
+        let found: Vec<(i64, crate::ai_categorize::CategoryMatch)> = rows
+            .iter()
+            .filter_map(|(id, name)| crate::ai_categorize::detect_category_among(name, &categories, None).map(|m| (*id, m)))
+            .collect();
+        assert_eq!(found.len(), 1);
+        // Picked by hand before the answer is written.
+        conn.execute("UPDATE events SET category_id = 1, category = 'Concert' WHERE id = ?1", [id]).unwrap();
+        let result = apply_detected(&conn, rows.len(), &found, false).unwrap();
+        assert_eq!(result.categorized_by_rule, 0);
+        assert_eq!(result.left_uncategorized, 1);
+        let category: String = conn.query_row("SELECT category FROM events WHERE id = ?1", [id], |r| r.get(0)).unwrap();
+        assert_eq!(category, "Concert");
+    }
+
+    #[test]
+    fn the_lock_free_detection_decides_exactly_like_the_one_that_reads_the_database() {
+        let conn = test_conn();
+        let (_, categories) = to_detect(&conn).unwrap();
+        for name in ["Monaco Grand Prix", "Reading Festival", "Les Misérables Musical", "Comedy Night", "Celine Dion", "", "  "] {
+            let a = crate::ai_categorize::detect_category_for_event_name(&conn, name);
+            let b = crate::ai_categorize::detect_category_among(name, &categories, None);
+            assert_eq!(a.map(|m| (m.id, m.name)), b.map(|m| (m.id, m.name)), "{name}");
+        }
     }
 
     #[test]

@@ -223,9 +223,14 @@ pub(crate) fn day(raw: &str) -> Option<String> {
     let mut out = d.format("%a %-d %b %Y").to_string();
     let rest = raw.trim().get(10..).unwrap_or("");
     let time = rest.trim_start_matches(['T', ' ']);
-    if time.len() >= 5 && time.as_bytes()[2] == b':' && time[..5].chars().filter(|c| c.is_ascii_digit()).count() == 4 {
-        out.push_str(" · ");
-        out.push_str(&time[..5]);
+    // 2.116.0: `get`, not `[..5]` - a date typed or imported with something
+    // else after it ("19:3€") cut there inside a character, and the panic
+    // took the whole app down while announcing a sale.
+    if let Some(hm) = time.get(..5) {
+        if hm.as_bytes()[2] == b':' && hm.chars().filter(|c| c.is_ascii_digit()).count() == 4 {
+            out.push_str(" · ");
+            out.push_str(hm);
+        }
     }
     Some(out)
 }
@@ -261,9 +266,11 @@ fn lines(parts: Vec<String>) -> String {
     parts.into_iter().filter(|l| !l.trim().is_empty()).collect::<Vec<_>>().join("\n")
 }
 
-/// The seats on one line: the first two groups, then how many more.
-fn seats_line(tickets: &[(String, String, String)]) -> String {
-    let all = seat_lines(tickets);
+/// The seats on one line: the first two groups, then how many more. `hide`:
+/// each group's row and seats are a spoiler, its section stays in sight
+/// (2.115.1, a sale's message).
+fn seats_line(tickets: &[(String, String, String)], hide: bool) -> String {
+    let all = seat_lines(tickets, hide);
     let groups: Vec<&str> = all.lines().filter(|l| !l.trim().is_empty()).collect();
     match groups.len() {
         0 => String::new(),
@@ -276,8 +283,9 @@ fn plural(n: i64, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
-/// Seats, one line per section and row: "Sec 112 · Row F · 14, 15".
-fn seat_lines(tickets: &[(String, String, String)]) -> String {
+/// Seats, one line per section and row: "Sec 112 · Row F · 14, 15" - or,
+/// `hide`, "Sec 112 · ||Row F · 14, 15||".
+fn seat_lines(tickets: &[(String, String, String)], hide: bool) -> String {
     let mut groups: Vec<((String, String), Vec<String>)> = Vec::new();
     for (section, row, seat) in tickets {
         let key = (section.trim().to_string(), row.trim().to_string());
@@ -292,20 +300,28 @@ fn seat_lines(tickets: &[(String, String, String)]) -> String {
     }
     let mut out: Vec<String> = Vec::new();
     for ((section, row), seats) in groups.iter().take(6) {
-        let mut parts: Vec<String> = Vec::new();
-        if !section.is_empty() {
-            parts.push(format!("Sec {section}"));
-        }
+        let mut place: Vec<String> = Vec::new();
         if !row.is_empty() {
-            parts.push(format!("Row {row}"));
+            place.push(format!("Row {row}"));
         }
         let named: Vec<&str> = seats.iter().map(String::as_str).filter(|s| !s.is_empty()).collect();
+        let count = named.is_empty().then(|| plural(seats.len() as i64, "ticket", "tickets"));
         if !named.is_empty() {
-            parts.push(named.join(", "));
-        } else {
-            parts.push(plural(seats.len() as i64, "ticket", "tickets"));
+            place.push(named.join(", "));
         }
-        out.push(md(&parts.join(" · ")));
+        let mut parts: Vec<String> = Vec::new();
+        if !section.is_empty() {
+            parts.push(md(&format!("Sec {section}")));
+        }
+        if !place.is_empty() {
+            // Escaped first, so nothing in a seat can close the spoiler early.
+            let place = md(&place.join(" · "));
+            parts.push(if hide { format!("||{place}||") } else { place });
+        }
+        if let Some(c) = count {
+            parts.push(md(&c));
+        }
+        out.push(parts.join(" · "));
     }
     if groups.len() > 6 {
         out.push(format!("+ {} more", groups.len() - 6));
@@ -531,11 +547,14 @@ fn order_embed(conn: &Connection, id: i64, occasion: Occasion) -> AppResult<Opti
     else {
         return Ok(None);
     };
-    let seats = seats_line(&tickets_of(
-        conn,
-        "SELECT IFNULL(section,''), IFNULL(row_label,''), IFNULL(seat,'') FROM tickets WHERE order_id = ?1 ORDER BY id",
-        id,
-    )?);
+    let seats = seats_line(
+        &tickets_of(
+            conn,
+            "SELECT IFNULL(section,''), IFNULL(row_label,''), IFNULL(seat,'') FROM tickets WHERE order_id = ?1 ORDER BY id",
+            id,
+        )?,
+        false,
+    );
     let source = platform.clone().or(supplier.clone()).filter(|s| !s.trim().is_empty());
     let mut first = format!("**{}** bought", plural(qty, "ticket", "tickets"));
     if let Some(s) = &source {
@@ -668,7 +687,11 @@ fn sale_embed(conn: &Connection, id: i64, occasion: Occasion) -> AppResult<Optio
         None => String::new(),
     };
     let seats: Vec<(String, String, String)> = lines.iter().map(|l| l.seat.clone()).collect();
-    let description = self::lines(vec![top, profit_line, format!("📅 {}", when_line(first.date.as_deref())), seats_line(&seats)]);
+    // 2.115.1: the row and seats hidden until clicked, unless marko turned
+    // that off (Settings -> Integrations -> Discord -> Sales).
+    let hide = load_notification_config(conn)?.discord.sale_options.hide_seats;
+    let description =
+        self::lines(vec![top, profit_line, format!("📅 {}", when_line(first.date.as_deref())), seats_line(&seats, hide)]);
     let _ = (&fees, &first.sale_date);
     Ok(Some(Embed {
         routes: vec![DiscordDestination::Sales],
@@ -1434,10 +1457,35 @@ mod tests {
     #[test]
     fn seats_group_by_section_and_row() {
         let t = |s: &str, r: &str, x: &str| (s.to_string(), r.to_string(), x.to_string());
-        assert_eq!(seat_lines(&[t("112", "F", "14"), t("112", "F", "15"), t("", "", "")]), "Sec 112 · Row F · 14, 15\n1 ticket");
-        assert_eq!(seat_lines(&[t("", "", ""), t("", "", "")]), "");
+        assert_eq!(seat_lines(&[t("112", "F", "14"), t("112", "F", "15"), t("", "", "")], false), "Sec 112 · Row F · 14, 15\n1 ticket");
+        assert_eq!(seat_lines(&[t("", "", ""), t("", "", "")], false), "");
         let many: Vec<_> = (0..9).map(|i| t(&i.to_string(), "A", "1")).collect();
-        assert!(seat_lines(&many).ends_with("+ 3 more"));
+        assert!(seat_lines(&many, false).ends_with("+ 3 more"));
+    }
+
+    /// 2.115.1: "ak pride new sale tak vo webhooku by malo byt hide row a seats".
+    #[test]
+    fn a_date_with_odd_characters_after_it_is_never_a_crash() {
+        // 2.116.0 regression: byte 5 of "19:3€" is inside the euro sign.
+        assert_eq!(day("2026-07-26 19:3€").as_deref(), Some("Sun 26 Jul 2026"));
+        assert_eq!(day("2026-07-26T19:30").as_deref(), Some("Sun 26 Jul 2026 · 19:30"));
+        assert_eq!(day("2026-07-26 ľš:čť").as_deref(), Some("Sun 26 Jul 2026"));
+        assert_eq!(day("2026-07-26").as_deref(), Some("Sun 26 Jul 2026"));
+        assert_eq!(day("not a date"), None);
+    }
+
+    #[test]
+    fn hidden_seats_keep_the_section_in_sight_and_nothing_can_close_the_spoiler() {
+        let t = |s: &str, r: &str, x: &str| (s.to_string(), r.to_string(), x.to_string());
+        assert_eq!(
+            seat_lines(&[t("112", "F", "14"), t("112", "F", "15"), t("GA", "", "")], true),
+            "Sec 112 · ||Row F · 14, 15||\nSec GA · 1 ticket",
+            "a count alone is nothing to hide"
+        );
+        assert_eq!(seat_lines(&[t("", "", "7")], true), "||7||");
+        let sneaky = seat_lines(&[t("A", "1||@everyone", "2")], true);
+        assert_eq!(sneaky, "Sec A · ||Row 1\\|\\|@everyone · 2||", "{sneaky}");
+        assert_eq!(seats_line(&[t("112", "F", "14")], true), "💺 Sec 112 · ||Row F · 14||");
     }
 
     #[test]
@@ -1497,15 +1545,23 @@ mod tests {
         assert_eq!(post.routes, vec![DiscordDestination::Sales]);
         let e = embed(&post);
         // 540 net - 220 cost = 320, on 220 spent.
+        // 2.115.1: the row and the seats hidden until clicked.
         assert_eq!(
             e["description"],
             "**2 tickets** sold for **€600.00** · pending\n\
              Profit **€320.00** · ROI 145%\n\
              📅 Sun 26 Jul 2026 · <t:1785067200:R>\n\
-             💺 Sec 112 · Row F · 14, 15"
+             💺 Sec 112 · ||Row F · 14, 15||"
         );
         assert_eq!(e["fields"], json!([]));
         assert_eq!(e["color"], GREEN);
+        let mut cfg = crate::commands::notifications::load_notification_config(&conn).unwrap();
+        cfg.discord.sale_options.hide_seats = false;
+        crate::commands::notifications::save_notification_config(&conn, &cfg).unwrap();
+        let shown = embed(&post_for(&conn, Subject::Sale(ids[1]), Occasion::Created).unwrap().unwrap())["description"].clone();
+        assert!(shown.as_str().unwrap().ends_with("💺 Sec 112 · Row F · 14, 15"), "turned off: shown as before: {shown}");
+        cfg.discord.sale_options.hide_seats = true;
+        crate::commands::notifications::save_notification_config(&conn, &cfg).unwrap();
         // Who bought is not Discord's business.
         assert!(!all_text(&post).contains("jane"), "{}", all_text(&post));
 

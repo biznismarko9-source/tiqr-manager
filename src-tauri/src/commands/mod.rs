@@ -15,6 +15,7 @@ pub mod data_health;
 pub mod database;
 // 2.113.0: every Discord message TIQR posts, built and sent in one place.
 pub mod discord;
+pub mod event_artwork;
 pub mod event_categories;
 pub mod events;
 pub mod finance_accounts;
@@ -29,6 +30,7 @@ pub mod lookups;
 // 2.100.0: Mail Intelligence (phase 1) - read a mailbox, classify what
 // arrives. Writes no business record; see its module doc comment.
 pub mod mail;
+pub mod mail_share;
 pub mod mail_sync;
 // 2.113.0: the mail reader - safe HTML, pictures and attachments in TIQR, translate.
 pub mod mail_view;

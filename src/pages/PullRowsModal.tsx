@@ -18,6 +18,7 @@ import {
 import AiImportPanel from "../components/AiImportPanel";
 import { CURRENCIES } from "./Orders";
 import { useToast } from "../lib/toast";
+import { quietly } from "../lib/diagnostics";
 
 /**
  * New Pull, as ROWS inside a modal over the Pulls list.
@@ -111,7 +112,7 @@ export default function PullRowsModal({
 
   useEffect(() => {
     if (!open) return;
-    api.listPlatforms().then(setPlatforms).catch(() => {});
+    api.listPlatforms().then(setPlatforms).catch(quietly("PullRowsModal: listPlatforms"));
   }, [open]);
 
   // Every open starts clean - the list keeps this component mounted and only

@@ -3,6 +3,8 @@ import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   IconAlertTriangle,
   IconCalendarDays,
+  IconChevronLeft,
+  IconChevronRight,
   IconChevronUp,
   IconGauge,
   IconClipboard,
@@ -34,6 +36,8 @@ import {
   type LiveSyncView,
 } from "../lib/liveSync";
 import { phaseLabel, phaseTone } from "../lib/liveSyncCore";
+import { closeMailShare, startMailShare } from "../lib/mailShare";
+import { startArtworkSearch, stopArtworkSearch } from "../lib/eventArtwork";
 import { useToast } from "../lib/toast";
 import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
@@ -41,7 +45,9 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { MailSyncResult, ScanRunFinishedPayload } from "../lib/types";
 import { Tour } from "./Tour";
+import { ErrorBoundary } from "./ErrorBoundary";
 import logo from "../assets/logo.png";
+import { quietly } from "../lib/diagnostics";
 
 // 2.14.0: how often automatic sync looks at the other machine while the app
 // stays open. Five minutes is picked for what it costs, not for how fast it
@@ -157,6 +163,19 @@ const NAV_ACTIVE_BAR =
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   `${NAV_BASE} ${isActive ? NAV_ACTIVE : NAV_IDLE}`;
 
+// 2.115.0, marko: "aj tuto cast kus stiahnut nech je mensia a hned viac sa
+// toho zmesti". The rail is narrower (176px), and folds to its icons with
+// one click - remembered on this computer.
+const RAIL_KEY = "tiqr:rail";
+
+function railFolded(): boolean {
+  try {
+    return localStorage.getItem(RAIL_KEY) === "icons";
+  } catch {
+    return false;
+  }
+}
+
 // 2.112.0: the live sync line's dot, by `phaseTone`.
 const LIVE_DOT: Record<"ok" | "busy" | "warn" | "off", string> = {
   ok: "bg-emerald-500",
@@ -208,6 +227,12 @@ export default function Layout() {
   const [liveOffer, setLiveOffer] = useState(false);
   // Paused because the database was just replaced from a copy - said once.
   const [livePaused, setLivePaused] = useState(false);
+  // 2.116.0: the note the last run left when it stopped unexpectedly - shown
+  // once (src-tauri/src/diag.rs keeps it for the diagnostic report).
+  const [crashNote, setCrashNote] = useState<string | null>(null);
+  useEffect(() => {
+    api.takeCrashReport().then(setCrashNote).catch(quietly("Layout: last crash note"));
+  }, []);
   const [liveOfferBusy, setLiveOfferBusy] = useState(false);
   // Decided at launch (see the Drive tick): Drive is only the backup copy,
   // because every computer seen lately syncs live.
@@ -217,19 +242,36 @@ export default function Layout() {
     if (!uid) return;
     const off = onLiveSync(setLive);
     const stop = startLiveSync(uid);
+    // 2.115.0: beside it, in the same Firestore space - while both computers
+    // run, one reads Gmail and sends the other the mail.
+    const stopShare = startMailShare(uid);
+    // 2.116.0: pictures for events that have none, a few at a time.
+    startArtworkSearch();
     api
       .liveSyncStatus()
       .then((s) => {
         setLiveOffer(!s.decided);
         setLivePaused(s.pausedAfterRestore);
       })
-      .catch(() => {});
+      .catch(quietly("Layout: live sync status"));
     return () => {
       off();
       stop();
+      stopShare();
+      stopArtworkSearch();
     };
   }, [user?.email]);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [folded, setFolded] = useState(railFolded);
+  const fold = (on: boolean) => {
+    setFolded(on);
+    setProfileOpen(false);
+    try {
+      localStorage.setItem(RAIL_KEY, on ? "icons" : "full");
+    } catch {
+      // A window that keeps nothing: it opens unfolded next time.
+    }
+  };
   const profileRef = useRef<HTMLDivElement>(null);
   // 2.13.1 checked and told; 2.14.0 acts - marko asked for the hand-off
   // between his Mac and his Windows PC to stop needing a click. This holds
@@ -377,7 +419,7 @@ export default function Layout() {
         .then((update) => {
           if (update) toast.info(`TIQR Manager ${update.version} is available - open Settings to install it.`);
         })
-        .catch(() => {});
+        .catch(quietly("Layout: check for an update"));
     };
     runCheck();
     const interval = setInterval(runCheck, UPDATE_CHECK_INTERVAL_MS);
@@ -629,6 +671,10 @@ export default function Layout() {
             // Closing must never depend on any of it having worked. What was
             // not sent is still marked dirty and goes on the next launch.
           }
+          // 2.115.0: if this computer reads Gmail for the other one, it hands
+          // that back first - or, past the timeout, the other computer takes
+          // it over by itself a few minutes later.
+          await Promise.race([closeMailShare().catch(() => undefined), new Promise((r) => setTimeout(r, 2_500))]);
           void win.destroy();
         });
       } catch {
@@ -654,7 +700,7 @@ export default function Layout() {
   // Settings are where a real failure IS shown, on purpose).
   useEffect(() => {
     const check = () => {
-      api.checkAndSendNotifications().catch(() => {});
+      api.checkAndSendNotifications().catch(quietly("Layout: checkAndSendNotifications"));
     };
     check();
     const interval = setInterval(check, 30 * 60 * 1000);
@@ -686,16 +732,16 @@ export default function Layout() {
         if (stopped) un();
         else unlisten = un;
       })
-      .catch(() => {});
-    api.startMailReader().catch(() => {});
+      .catch(quietly("Layout: listen for mail sync"));
+    api.startMailReader().catch(quietly("Layout: startMailReader"));
     const off = onMailSyncRequested(() => {
-      api.wakeMailReader().catch(() => {});
+      api.wakeMailReader().catch(quietly("Layout: wakeMailReader"));
     });
     return () => {
       stopped = true;
       off();
       unlisten?.();
-      api.holdMailReader().catch(() => {});
+      api.holdMailReader().catch(quietly("Layout: holdMailReader"));
     };
   }, []);
 
@@ -707,19 +753,29 @@ export default function Layout() {
           2.6.0: width deliberately UNCHANGED - the redesign buys its extra
           breathing room from tighter internal padding and a smaller nav type
           size, not by taking width back off the tables. */}
-      <aside className="flex w-48 shrink-0 flex-col border-r border-line bg-surface-sunken">
+      {/* 2.115.0: 176px, or 56px folded to its icons (marko: "kus stiahnut
+          nech je mensia"). */}
+      <aside
+        className={`flex ${folded ? "w-14" : "w-44"} shrink-0 flex-col border-r border-line bg-surface-sunken transition-[width] duration-150`}
+      >
         {/* Brand lockup. The hairline under it is what separates the app's
             identity from its navigation - the same "one quiet rule per
             section boundary" the sidebar uses throughout, rather than
             boxes or background changes. */}
-        <div className="flex items-center gap-2.5 border-b border-slate-100 px-3.5 py-3.5 dark:border-slate-800/80">
-          <img src={logo} alt="TIQR Manager" className="h-8 w-8 rounded-lg shadow-card ring-1 ring-slate-900/5 dark:ring-white/10" />
-          <div className="min-w-0">
-            <p className="truncate text-[13px] font-semibold leading-tight tracking-tight text-slate-900 dark:text-slate-50">
-              TIQR Manager
-            </p>
-            <p className="truncate text-[11px] leading-tight text-slate-500 dark:text-slate-400">Reseller toolkit</p>
-          </div>
+        <div
+          className={`flex items-center gap-2.5 border-b border-slate-100 py-3 dark:border-slate-800/80 ${
+            folded ? "justify-center px-2" : "px-3"
+          }`}
+        >
+          <img src={logo} alt="TIQR Manager" className="h-7 w-7 shrink-0 rounded-lg shadow-card ring-1 ring-slate-900/5 dark:ring-white/10" />
+          {!folded && (
+            <div className="min-w-0">
+              <p className="truncate text-[13px] font-semibold leading-tight tracking-tight text-slate-900 dark:text-slate-50">
+                TIQR Manager
+              </p>
+              <p className="truncate text-[11px] leading-tight text-slate-500 dark:text-slate-400">Reseller toolkit</p>
+            </div>
+          )}
         </div>
 
         {/* 2.25.0: `data-tour` anchors only - see components/Tour.tsx. */}
@@ -727,12 +783,19 @@ export default function Layout() {
           {NAV_GROUPS.map((group, g) => (
             <div key={g} className={g > 0 ? "mt-2 space-y-0.5 border-t border-slate-200/70 pt-2 dark:border-slate-800/80" : "space-y-0.5"}>
               {group.map((item) => (
-                <NavLink key={item.to} data-tour={`nav:${item.to}`} to={item.to} end={item.end} className={navLinkClass}>
+                <NavLink
+                  key={item.to}
+                  data-tour={`nav:${item.to}`}
+                  to={item.to}
+                  end={item.end}
+                  title={folded ? item.label : undefined}
+                  className={(s) => `${navLinkClass(s)}${folded ? " justify-center !px-0" : ""}`}
+                >
                   {({ isActive }) => (
                     <>
                       {isActive && <span className={NAV_ACTIVE_BAR} aria-hidden="true" />}
                       <item.icon className="h-[17px] w-[17px] shrink-0" />
-                      <span className="truncate">{item.label}</span>
+                      <span className={folded ? "sr-only" : "truncate"}>{item.label}</span>
                     </>
                   )}
                 </NavLink>
@@ -747,13 +810,13 @@ export default function Layout() {
           <div className="border-t border-slate-100 px-2 py-1.5 dark:border-slate-800/80">
             <Link
               to="/settings/data"
-              title={live.detail ?? "Live sync between your computers"}
-              className={`${NAV_BASE} w-full ${NAV_IDLE}`}
+              title={folded ? phaseLabel(live.phase, live.outbox) : live.detail ?? "Live sync between your computers"}
+              className={`${NAV_BASE} w-full ${NAV_IDLE}${folded ? " justify-center !px-0" : ""}`}
             >
               <span className="flex h-[17px] w-[17px] shrink-0 items-center justify-center">
                 <span className={`h-2 w-2 rounded-full ${LIVE_DOT[phaseTone(live.phase)]}`} />
               </span>
-              <span className="flex-1 truncate text-left">{phaseLabel(live.phase, live.outbox)}</span>
+              <span className={folded ? "sr-only" : "flex-1 truncate text-left"}>{phaseLabel(live.phase, live.outbox)}</span>
             </Link>
           </div>
         )}
@@ -764,17 +827,30 @@ export default function Layout() {
             single-click behaviour and the same useTheme() call, restyled -
             the icon now sits in its own small chip so the row reads as a
             control rather than as one more nav item. */}
-        <div className="border-t border-slate-100 px-2 py-2 dark:border-slate-800/80">
+        <div className="space-y-0.5 border-t border-slate-100 px-2 py-2 dark:border-slate-800/80">
           <button
             type="button"
             onClick={() => setThemeMode(isDark ? "light" : "dark")}
             title={isDark ? "Switch to light mode" : "Switch to dark mode"}
-            className={`${NAV_BASE} w-full ${NAV_IDLE}`}
+            className={`${NAV_BASE} w-full ${NAV_IDLE}${folded ? " justify-center !px-0" : ""}`}
           >
             <span className="flex h-[17px] w-[17px] shrink-0 items-center justify-center">
               {isDark ? <IconMoon className="h-4 w-4" /> : <IconSun className="h-4 w-4" />}
             </span>
-            <span className="flex-1 truncate text-left">{isDark ? "Dark mode" : "Light mode"}</span>
+            <span className={folded ? "sr-only" : "flex-1 truncate text-left"}>{isDark ? "Dark mode" : "Light mode"}</span>
+          </button>
+          {/* 2.115.0: fold the rail to its icons, and back. */}
+          <button
+            type="button"
+            onClick={() => fold(!folded)}
+            title={folded ? "Show the menu's names" : "Fold the menu to its icons - more room for the page"}
+            aria-label={folded ? "Unfold the menu" : "Fold the menu"}
+            className={`${NAV_BASE} w-full ${NAV_IDLE}${folded ? " justify-center !px-0" : ""}`}
+          >
+            <span className="flex h-[17px] w-[17px] shrink-0 items-center justify-center">
+              {folded ? <IconChevronRight className="h-4 w-4" /> : <IconChevronLeft className="h-4 w-4" />}
+            </span>
+            {!folded && <span className="flex-1 truncate text-left">Fold the menu</span>}
           </button>
         </div>
 
@@ -789,7 +865,11 @@ export default function Layout() {
             // the button it's anchored to (this menu opens upward) instead
             // of scaling from its own center, which would look like it's
             // growing out of thin air above the button.
-            <div className="absolute inset-x-2 bottom-full mb-1.5 origin-bottom animate-[pop-in_.16s_ease-out] overflow-hidden rounded-xl border border-slate-200 bg-surface p-1 shadow-overlay dark:border-slate-700 dark:bg-slate-800">
+            <div
+              className={`absolute bottom-full mb-1.5 origin-bottom animate-[pop-in_.16s_ease-out] overflow-hidden rounded-xl border border-slate-200 bg-surface p-1 shadow-overlay dark:border-slate-700 dark:bg-slate-800 ${
+                folded ? "left-2 z-20 w-44" : "inset-x-2"
+              }`}
+            >
               <Link
                 to="/settings"
                 onClick={() => setProfileOpen(false)}
@@ -817,7 +897,10 @@ export default function Layout() {
             type="button"
             onClick={() => setProfileOpen((o) => !o)}
             aria-expanded={profileOpen}
-            className={`flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
+            title={folded ? user?.email ?? user?.name ?? "Account" : undefined}
+            className={`flex w-full items-center gap-2.5 rounded-lg py-2 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
+              folded ? "justify-center px-0" : "px-2"
+            } ${
               profileOpen
                 ? "bg-slate-100 dark:bg-slate-800/70"
                 : "hover:bg-slate-100 dark:hover:bg-slate-800/70"
@@ -826,15 +909,19 @@ export default function Layout() {
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-600 text-[11px] font-semibold text-white shadow-card">
               {initialsFor(user?.name ?? "?")}
             </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-xs font-semibold text-slate-800 dark:text-slate-200">
-                {user?.name ?? "Account"}
-              </span>
-              <span className="block truncate text-[11px] text-slate-500 dark:text-slate-400">{user?.email ?? ""}</span>
-            </span>
-            <IconChevronUp
-              className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${profileOpen ? "" : "rotate-180"}`}
-            />
+            {!folded && (
+              <>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs font-semibold text-slate-800 dark:text-slate-200">
+                    {user?.name ?? "Account"}
+                  </span>
+                  <span className="block truncate text-[11px] text-slate-500 dark:text-slate-400">{user?.email ?? ""}</span>
+                </span>
+                <IconChevronUp
+                  className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${profileOpen ? "" : "rotate-180"}`}
+                />
+              </>
+            )}
           </button>
         </div>
       </aside>
@@ -891,6 +978,29 @@ export default function Layout() {
               className="ml-auto text-brand-800/70 hover:text-brand-950 dark:text-brand-300/70 dark:hover:text-brand-100"
             >
               Not now
+            </button>
+          </div>
+        )}
+        {crashNote && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-7 py-2 text-xs text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300">
+            <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 flex-1">
+              <strong className="font-semibold">TIQR closed unexpectedly last time.</strong> What was saved before it is
+              safe. The details are in Settings - Support - Diagnostic report, ready to send.
+            </span>
+            <Link
+              to="/settings/support"
+              onClick={() => setCrashNote(null)}
+              className="rounded-md bg-amber-600 px-2 py-1 font-semibold text-white transition hover:bg-amber-500"
+            >
+              Open
+            </Link>
+            <button
+              type="button"
+              onClick={() => setCrashNote(null)}
+              className="rounded-md px-2 py-1 font-semibold transition hover:bg-amber-100 dark:hover:bg-amber-500/20"
+            >
+              Dismiss
             </button>
           </div>
         )}
@@ -990,7 +1100,11 @@ export default function Layout() {
           </div>
         )}
         <div className="px-7 py-5">
-          <Outlet />
+          {/* 2.116.0: a screen that fails, fails alone - the sidebar and
+              everything else stay (components/ErrorBoundary.tsx). */}
+          <ErrorBoundary area={`page ${location.pathname}`} resetKey={location.pathname}>
+            <Outlet />
+          </ErrorBoundary>
         </div>
       </main>
       <SyncActivity activity={syncActivity} />

@@ -86,7 +86,7 @@ use crate::models::{
 use std::collections::HashMap;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -2136,7 +2136,7 @@ pub(crate) fn classify_fetched(m: &FetchedMessage) -> Classification {
 // Commands.
 // ---------------------------------------------------------------------------
 
-fn status_impl(conn: &Connection) -> AppResult<MailConnectionStatus> {
+pub(crate) fn status_impl(conn: &Connection) -> AppResult<MailConnectionStatus> {
     let state = read_sync_state(conn)?;
     let token = crate::secrets::get(conn, MAIL_REFRESH_TOKEN_KEY)?;
     let granted = crate::secrets::get(conn, MAIL_GRANTED_SCOPE_KEY)?.unwrap_or_default();
@@ -2183,6 +2183,15 @@ fn status_impl(conn: &Connection) -> AppResult<MailConnectionStatus> {
         },
         sync_interval_seconds: sync_interval_seconds(conn),
         skip_folders: skipped_folders(conn),
+        share_reading: crate::commands::mail_share::share_enabled(conn),
+        mark_read: choice(conn, MAIL_MARK_READ_KEY, &MARK_READ),
+        after_move: choice(conn, MAIL_AFTER_MOVE_KEY, &AFTER_MOVE),
+        list_preview: switch(conn, MAIL_LIST_PREVIEW_KEY, true),
+        list_tags: switch(conn, MAIL_LIST_TAGS_KEY, true),
+        list_compact: switch(conn, MAIL_LIST_COMPACT_KEY, false),
+        start_folder: choice(conn, MAIL_START_FOLDER_KEY, &START_FOLDER),
+        shortcuts: switch(conn, MAIL_SHORTCUTS_KEY, true),
+        read_speed: choice(conn, MAIL_READ_SPEED_KEY, &READ_SPEED),
         // 2.113.1: a muted sender's mail is not news.
         unread_count: conn
             .query_row(
@@ -3451,7 +3460,7 @@ pub(crate) fn auto_since(conn: &Connection, kind: &str) -> AppResult<String> {
 
 /// This computer's id, or `None` for a database with no file behind it (a
 /// test) - which is then the only computer there is.
-fn this_device(conn: &Connection) -> Option<String> {
+pub(crate) fn this_device(conn: &Connection) -> Option<String> {
     let file: String = conn
         .query_row("SELECT file FROM pragma_database_list WHERE name = 'main'", [], |r| r.get(0))
         .ok()?;
@@ -4687,6 +4696,117 @@ pub fn set_mail_automation(
     status_impl(&conn)
 }
 
+// 2.115.0, marko: "celkovo do mailu pridat viac funkcii, nastaveni aby
+// vsetko si clovek vedel dat ako chce". The Mail screen's own choices, each
+// defaulting to the way Mail always worked; the first of each list is that
+// default. All but the reading speed are the same on both computers.
+pub(crate) const MAIL_MARK_READ_KEY: &str = "mail_mark_read";
+pub(crate) const MAIL_AFTER_MOVE_KEY: &str = "mail_after_move";
+pub(crate) const MAIL_LIST_PREVIEW_KEY: &str = "mail_list_preview";
+pub(crate) const MAIL_LIST_TAGS_KEY: &str = "mail_list_tags";
+pub(crate) const MAIL_LIST_COMPACT_KEY: &str = "mail_list_compact";
+pub(crate) const MAIL_START_FOLDER_KEY: &str = "mail_start_folder";
+pub(crate) const MAIL_SHORTCUTS_KEY: &str = "mail_shortcuts";
+/// Per computer, never shared: one of them may sit on a slow connection.
+pub(crate) const MAIL_READ_SPEED_KEY: &str = "mail_read_speed";
+
+const MARK_READ: [&str; 3] = ["open", "delay", "manual"];
+const AFTER_MOVE: [&str; 3] = ["list", "older", "newer"];
+const START_FOLDER: [&str; 4] = ["inbox", "important", "starred", "last"];
+const READ_SPEED: [&str; 2] = ["full", "gentle"];
+
+/// A stored choice, or the default (the first) for anything else.
+fn choice(conn: &Connection, key: &str, allowed: &[&'static str]) -> String {
+    let stored = get_setting(conn, key).ok().flatten();
+    allowed.iter().find(|a| stored.as_deref() == Some(**a)).copied().unwrap_or(allowed[0]).to_string()
+}
+
+fn switch(conn: &Connection, key: &str, default_on: bool) -> bool {
+    match get_setting(conn, key).ok().flatten().as_deref() {
+        Some("on") => true,
+        Some("off") => false,
+        _ => default_on,
+    }
+}
+
+/// Opening a message marks it read - unless marko chose later, or by hand.
+pub(crate) fn marks_read_on_open(conn: &Connection) -> bool {
+    choice(conn, MAIL_MARK_READ_KEY, &MARK_READ) == "open"
+}
+
+/// This computer reads Gmail gently: fewer at a time, with a pause between.
+pub(crate) fn reads_gently(conn: &Connection) -> bool {
+    choice(conn, MAIL_READ_SPEED_KEY, &READ_SPEED) == "gentle"
+}
+
+/// 2.115.0: the Mail screen's choices. Any may be left out.
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MailScreenOptions {
+    pub mark_read: Option<String>,
+    pub after_move: Option<String>,
+    pub list_preview: Option<bool>,
+    pub list_tags: Option<bool>,
+    pub list_compact: Option<bool>,
+    pub start_folder: Option<String>,
+    pub shortcuts: Option<bool>,
+}
+
+pub(crate) fn set_screen_options(conn: &Connection, o: MailScreenOptions) -> AppResult<()> {
+    let pick = |v: String, allowed: &[&str], what: &str| -> AppResult<String> {
+        if allowed.contains(&v.as_str()) {
+            Ok(v)
+        } else {
+            Err(AppError::Validation(format!("\"{v}\" is not a choice for {what}.")))
+        }
+    };
+    let mut choices: Vec<(&str, String)> = Vec::new();
+    if let Some(v) = o.mark_read {
+        choices.push((MAIL_MARK_READ_KEY, pick(v, &MARK_READ, "when mail counts as read")?));
+    }
+    if let Some(v) = o.after_move {
+        choices.push((MAIL_AFTER_MOVE_KEY, pick(v, &AFTER_MOVE, "what opens after a move")?));
+    }
+    if let Some(v) = o.start_folder {
+        choices.push((MAIL_START_FOLDER_KEY, pick(v, &START_FOLDER, "where Mail opens")?));
+    }
+    for (key, on) in [
+        (MAIL_LIST_PREVIEW_KEY, o.list_preview),
+        (MAIL_LIST_TAGS_KEY, o.list_tags),
+        (MAIL_LIST_COMPACT_KEY, o.list_compact),
+        (MAIL_SHORTCUTS_KEY, o.shortcuts),
+    ] {
+        if let Some(on) = on {
+            choices.push((key, if on { "on" } else { "off" }.to_string()));
+        }
+    }
+    if choices.is_empty() {
+        return Ok(());
+    }
+    for (key, v) in &choices {
+        set_setting(conn, key, v)?;
+    }
+    crate::commands::shared_settings::touch(conn, &crate::commands::shared_settings::MAIL)
+}
+
+#[tauri::command]
+pub fn set_mail_screen_options(state: State<AppState>, options: MailScreenOptions) -> AppResult<MailConnectionStatus> {
+    let conn = state.db.lock().unwrap();
+    set_screen_options(&conn, options)?;
+    status_impl(&conn)
+}
+
+/// 2.115.0: "full" or "gentle" - for this computer only.
+#[tauri::command]
+pub fn set_mail_read_speed(state: State<AppState>, speed: String) -> AppResult<MailConnectionStatus> {
+    if !READ_SPEED.contains(&speed.as_str()) {
+        return Err(AppError::Validation(format!("\"{speed}\" is not a reading speed.")));
+    }
+    let conn = state.db.lock().unwrap();
+    set_setting(&conn, MAIL_READ_SPEED_KEY, &speed)?;
+    status_impl(&conn)
+}
+
 /// 2.113.0: the reader's two choices. Either may be left out.
 #[tauri::command]
 pub fn set_mail_reader_options(
@@ -5056,12 +5176,34 @@ pub fn get_mail_folder_counts(state: State<AppState>) -> AppResult<Vec<MailFolde
 // A mute that has ended keeps hiding what arrived before its end - that was
 // the noise - and new mail shows again. Unmute brings all of it back. The
 // list travels to the other computer with the mail settings.
+//
+// 2.115.0, marko: "mute nastavit aj podla objectu". A mute can also be by
+// words in the subject ("weekly digest", "posledná šanca"): whole words, in
+// that order, whatever the case and the accents - the same rules as above
+// otherwise. The words are folded to letters, digits and single spaces
+// before they come anywhere near the SQL (`fold_words`), so a subject - text
+// a stranger wrote - can never reach it as anything else.
 
-/// One muted sender.
+/// 2.115.0: what a mute hides by.
+#[derive(Debug, Clone, Copy, Serialize, serde::Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MuteKind {
+    /// An address, or everyone at a domain - and every mute from before
+    /// 2.115.0, which had no kind.
+    #[default]
+    Sender,
+    /// Mail whose subject has these words in it, in this order.
+    Subject,
+}
+
+/// One mute.
 #[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MailMute {
-    /// "news@shop.com" (that sender) or "shop.com" (everyone at it).
+    #[serde(default)]
+    pub kind: MuteKind,
+    /// Sender: "news@shop.com" (that sender) or "shop.com" (everyone at
+    /// it). Subject: the words as marko typed them.
     pub who: String,
     pub since: String,
     /// When it ends; `None` until unmuted.
@@ -5105,6 +5247,25 @@ pub(crate) fn mute_target(raw: &str) -> Option<String> {
     }
 }
 
+/// 2.115.0: the words of a subject mute as kept - trimmed, single spaces, no
+/// control characters, at most 120 characters - or `None` when they come to
+/// fewer than three letters or digits: muting "a" or "!!!" would hide almost
+/// everything.
+pub(crate) fn subject_words(raw: &str) -> Option<String> {
+    let kept: String = raw.split_whitespace().collect::<Vec<_>>().join(" ").chars().filter(|c| !c.is_control()).take(120).collect();
+    let kept = kept.trim().to_string();
+    let letters = crate::commands::mail_facts::fold_words(&kept).chars().filter(|c| c.is_alphanumeric()).count();
+    (letters >= 3).then_some(kept)
+}
+
+/// Two mutes of the same kind for the same thing.
+fn same_mute(kind: MuteKind, a: &str, b: &str) -> bool {
+    match kind {
+        MuteKind::Sender => a == b,
+        MuteKind::Subject => crate::commands::mail_facts::fold_words(a) == crate::commands::mail_facts::fold_words(b),
+    }
+}
+
 pub(crate) fn mail_mutes(conn: &Connection) -> Vec<MailMute> {
     get_setting(conn, MAIL_MUTED_KEY)
         .ok()
@@ -5112,7 +5273,10 @@ pub(crate) fn mail_mutes(conn: &Connection) -> Vec<MailMute> {
         .and_then(|raw| serde_json::from_str::<Vec<MailMute>>(&raw).ok())
         .unwrap_or_default()
         .into_iter()
-        .filter(|m| mute_target(&m.who).as_deref() == Some(m.who.as_str()))
+        .filter(|m| match m.kind {
+            MuteKind::Sender => mute_target(&m.who).as_deref() == Some(m.who.as_str()),
+            MuteKind::Subject => subject_words(&m.who).as_deref() == Some(m.who.as_str()),
+        })
         .collect()
 }
 
@@ -5123,17 +5287,28 @@ fn save_mutes(conn: &Connection, mutes: &[MailMute]) -> AppResult<()> {
 }
 
 /// The muted mail as a SQL condition on `mail_messages` - `0` when nobody is
-/// muted. Every value in it was checked (`mute_target`, a parsed time), so
-/// nothing a message says can reach the SQL.
+/// muted. Every value in it was checked (`mute_target`, a parsed time) or
+/// folded to letters, digits and spaces (`fold_words`), so nothing a message
+/// says can reach the SQL.
 pub(crate) fn muted_sql(conn: &Connection) -> String {
     let parts: Vec<String> = mail_mutes(conn)
         .iter()
         .filter_map(|m| {
-            let who = mute_target(&m.who)?;
-            let sender = if who.contains('@') {
-                format!("LOWER(from_address) = '{who}'")
-            } else {
-                format!("(LOWER(from_address) LIKE '%@{who}' OR LOWER(from_address) LIKE '%.{who}')")
+            let sender = match m.kind {
+                MuteKind::Sender => {
+                    let who = mute_target(&m.who)?;
+                    if who.contains('@') {
+                        format!("LOWER(from_address) = '{who}'")
+                    } else {
+                        format!("(LOWER(from_address) LIKE '%@{who}' OR LOWER(from_address) LIKE '%.{who}')")
+                    }
+                }
+                MuteKind::Subject => {
+                    // Letters, digits and single spaces only; a quote is
+                    // doubled all the same.
+                    let words = crate::commands::mail_facts::fold_words(&subject_words(&m.who)?).replace('\'', "''");
+                    format!("(instr(' ' || tiqr_fold(subject) || ' ', ' {words} ') > 0)")
+                }
             };
             Some(match &m.until {
                 None => sender,
@@ -5150,18 +5325,15 @@ pub(crate) fn muted_sql(conn: &Connection) -> String {
     format!("(IFNULL(category, 'other') NOT IN ({RECORD_CATEGORIES}) AND ({}))", parts.join(" OR "))
 }
 
-pub(crate) fn mute_impl(conn: &Connection, who: &str, days: Option<i64>, now: DateTime<Utc>) -> AppResult<Vec<MailMute>> {
-    let Some(who) = mute_target(who) else {
-        return Err(AppError::Validation(
-            "That is not an address or a domain TIQR can mute (a shared one like gmail.com would hide everybody).".into(),
-        ));
-    };
+/// Adds a checked mute, replacing one for the same thing.
+fn add_mute(conn: &Connection, kind: MuteKind, who: String, days: Option<i64>, now: DateTime<Utc>) -> AppResult<Vec<MailMute>> {
     if days.is_some_and(|d| !(1..=365).contains(&d)) {
         return Err(AppError::Validation("A mute lasts from 1 to 365 days, or until you unmute.".into()));
     }
     let mut mutes = mail_mutes(conn);
-    mutes.retain(|m| m.who != who);
+    mutes.retain(|m| !(m.kind == kind && same_mute(kind, &m.who, &who)));
     mutes.push(MailMute {
+        kind,
         who,
         since: now.to_rfc3339(),
         until: days.map(|d| (now + ChronoDuration::days(d)).to_rfc3339()),
@@ -5170,12 +5342,38 @@ pub(crate) fn mute_impl(conn: &Connection, who: &str, days: Option<i64>, now: Da
     Ok(mutes)
 }
 
-pub(crate) fn unmute_impl(conn: &Connection, who: &str) -> AppResult<Vec<MailMute>> {
-    let who = who.trim().trim_start_matches('@').to_ascii_lowercase();
+fn remove_mute(conn: &Connection, kind: MuteKind, who: &str) -> AppResult<Vec<MailMute>> {
     let mut mutes = mail_mutes(conn);
-    mutes.retain(|m| m.who != who);
+    mutes.retain(|m| !(m.kind == kind && same_mute(kind, &m.who, who)));
     save_mutes(conn, &mutes)?;
     Ok(mutes)
+}
+
+pub(crate) fn mute_impl(conn: &Connection, who: &str, days: Option<i64>, now: DateTime<Utc>) -> AppResult<Vec<MailMute>> {
+    let Some(who) = mute_target(who) else {
+        return Err(AppError::Validation(
+            "That is not an address or a domain TIQR can mute (a shared one like gmail.com would hide everybody).".into(),
+        ));
+    };
+    add_mute(conn, MuteKind::Sender, who, days, now)
+}
+
+pub(crate) fn unmute_impl(conn: &Connection, who: &str) -> AppResult<Vec<MailMute>> {
+    remove_mute(conn, MuteKind::Sender, &who.trim().trim_start_matches('@').to_ascii_lowercase())
+}
+
+/// 2.115.0: mutes mail whose subject has these words.
+pub(crate) fn mute_subject_impl(conn: &Connection, words: &str, days: Option<i64>, now: DateTime<Utc>) -> AppResult<Vec<MailMute>> {
+    let Some(words) = subject_words(words) else {
+        return Err(AppError::Validation(
+            "Give at least three letters or digits from the subject - fewer would hide almost everything.".into(),
+        ));
+    };
+    add_mute(conn, MuteKind::Subject, words, days, now)
+}
+
+pub(crate) fn unmute_subject_impl(conn: &Connection, words: &str) -> AppResult<Vec<MailMute>> {
+    remove_mute(conn, MuteKind::Subject, words)
 }
 
 #[tauri::command]
@@ -5197,6 +5395,21 @@ pub fn mute_mail_sender(state: State<AppState>, who: String, days: Option<i64>) 
 pub fn unmute_mail_sender(state: State<AppState>, who: String) -> AppResult<Vec<MailMute>> {
     let conn = state.db.lock().unwrap();
     unmute_impl(&conn, &who)
+}
+
+/// 2.115.0: mutes mail whose subject has these words - for `days`, or until
+/// unmuted when `days` is empty.
+#[tauri::command]
+pub fn mute_mail_subject(state: State<AppState>, words: String, days: Option<i64>) -> AppResult<Vec<MailMute>> {
+    let conn = state.db.lock().unwrap();
+    mute_subject_impl(&conn, &words, days, Utc::now())
+}
+
+/// 2.115.0: shows all mail with these subject words again.
+#[tauri::command]
+pub fn unmute_mail_subject(state: State<AppState>, words: String) -> AppResult<Vec<MailMute>> {
+    let conn = state.db.lock().unwrap();
+    unmute_subject_impl(&conn, &words)
 }
 
 // ===========================================================================
@@ -7903,6 +8116,95 @@ mod tests {
         mute_impl(&conn, "shop.com", None, now).unwrap();
         let m = mail_mutes(&conn);
         assert_eq!((m.len(), m[0].until.clone()), (1, None));
+    }
+
+    /// 2.115.0: "mute nastavit aj podla objectu".
+    #[test]
+    fn the_mail_screen_choices_default_to_how_mail_always_worked_and_take_only_real_choices() {
+        let conn = test_conn();
+        let s = status_impl(&conn).unwrap();
+        assert_eq!(
+            (s.mark_read.as_str(), s.after_move.as_str(), s.start_folder.as_str(), s.read_speed.as_str()),
+            ("open", "list", "inbox", "full")
+        );
+        assert!(s.list_preview && s.list_tags && !s.list_compact && s.shortcuts);
+        assert!(marks_read_on_open(&conn) && !reads_gently(&conn));
+
+        set_screen_options(
+            &conn,
+            MailScreenOptions {
+                mark_read: Some("manual".into()),
+                after_move: Some("older".into()),
+                list_compact: Some(true),
+                shortcuts: Some(false),
+                start_folder: Some("last".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let s = status_impl(&conn).unwrap();
+        assert_eq!((s.mark_read.as_str(), s.after_move.as_str(), s.start_folder.as_str()), ("manual", "older", "last"));
+        assert!(s.list_compact && !s.shortcuts && s.list_preview, "what was left out stays");
+        assert!(!marks_read_on_open(&conn));
+        let stamp = get_setting(&conn, "shared_mail_at").unwrap();
+        assert!(stamp.is_some(), "the same on the other computer");
+
+        let wrong = set_screen_options(&conn, MailScreenOptions { after_move: Some("sideways".into()), ..Default::default() });
+        assert!(wrong.is_err());
+        assert_eq!(status_impl(&conn).unwrap().after_move, "older", "nothing changed by a wrong one");
+        set_setting(&conn, MAIL_READ_SPEED_KEY, "gentle").unwrap();
+        assert!(reads_gently(&conn));
+        assert!(!crate::commands::shared_settings::MAIL.keys.contains(&MAIL_READ_SPEED_KEY), "each computer's own");
+    }
+
+    #[test]
+    fn a_subject_mute_hides_mail_with_those_words_whatever_the_case_and_accents() {
+        let conn = test_conn();
+        let subject = |id: i64, s: &str| {
+            conn.execute("UPDATE mail_messages SET subject = ?2 WHERE id = ?1", params![id, s]).unwrap();
+        };
+        let a = put(&conn, "digest", "inbox", "2026-10-10T00:00:00Z");
+        subject(a, "Your WEEKLY-Digest #45");
+        let b = put(&conn, "sk", "inbox", "2026-10-09T00:00:00Z");
+        subject(b, "Posledná šanca: lístky na Elán");
+        let c = put(&conn, "part", "inbox", "2026-10-08T00:00:00Z");
+        subject(c, "Weekly digests are over");
+        let d = put(&conn, "order", "inbox", "2026-10-07T00:00:00Z");
+        subject(d, "Weekly digest - your order is confirmed");
+        conn.execute("UPDATE mail_messages SET category = 'purchase_confirmation' WHERE id = ?1", [d]).unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-10-11T00:00:00+00:00").unwrap().with_timezone(&Utc);
+
+        mute_subject_impl(&conn, "  weekly   digest ", None, now).unwrap();
+        mute_subject_impl(&conn, "POSLEDNA sanca", Some(7), now).unwrap();
+        let mutes = mail_mutes(&conn);
+        assert_eq!(mutes.iter().map(|m| (m.kind, m.who.as_str())).collect::<Vec<_>>(), vec![
+            (MuteKind::Subject, "weekly digest"),
+            (MuteKind::Subject, "POSLEDNA sanca"),
+        ]);
+        assert_eq!(folder_pids(&conn, "muted"), vec!["digest", "sk"], "whole words, any case, accents folded");
+        assert_eq!(folder_pids(&conn, "inbox"), vec!["part", "order"], "\"digests\" is another word; an order always shows");
+
+        // The same words again replace the mute; Unmute matches them the same way.
+        mute_subject_impl(&conn, "Weekly Digest", Some(1), now).unwrap();
+        assert_eq!(mail_mutes(&conn).len(), 2);
+        unmute_subject_impl(&conn, "WEEKLY DIGEST").unwrap();
+        assert_eq!(folder_pids(&conn, "muted"), vec!["sk"]);
+
+        // Too little to mute by, and a subject that tries to be SQL, is just words.
+        for bad in ["", "a", "!!", "  ab  ", "  '; --"] {
+            assert!(mute_subject_impl(&conn, bad, None, now).is_err(), "{bad:?}");
+        }
+        let e = put(&conn, "sql", "inbox", "2026-10-06T00:00:00Z");
+        subject(e, "x' OR 1=1 -- hello");
+        mute_subject_impl(&conn, "x' OR 1=1 --", None, now).unwrap();
+        assert_eq!(folder_pids(&conn, "muted"), vec!["sk", "sql"], "only the mail with those words");
+        assert_eq!(folder_pids(&conn, "inbox"), vec!["digest", "part", "order"]);
+        // A sender mute and a subject mute with the same text are two mutes.
+        mute_impl(&conn, "shop.com", None, now).unwrap();
+        assert_eq!(mail_mutes(&conn).iter().filter(|m| m.kind == MuteKind::Sender).count(), 1);
+        // A list from before 2.115.0 has no kind: every entry is a sender.
+        set_setting(&conn, MAIL_MUTED_KEY, r#"[{"who":"shop.com","since":"x","until":null}]"#).unwrap();
+        assert_eq!(mail_mutes(&conn)[0].kind, MuteKind::Sender);
     }
 
     /// 2.113.0: "aby som vedel dane maily presunut tak kde chcem".

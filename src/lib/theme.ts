@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
+import { quietly } from "./diagnostics";
 
 export type ThemeMode = "light" | "dark" | "system";
 
@@ -54,7 +55,7 @@ export function useTheme(): [ThemeMode, (mode: ThemeMode) => void] {
   const setMode = useCallback((next: ThemeMode) => {
     setModeState(next);
     applyMode(next);
-    api.setAppSetting(SETTING_KEY, next).catch(() => {});
+    api.setAppSetting(SETTING_KEY, next).catch(quietly("theme: setAppSetting"));
   }, []);
 
   return [mode, setMode];

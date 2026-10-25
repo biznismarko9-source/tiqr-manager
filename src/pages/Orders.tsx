@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import OrderRowsModal from "./OrderRowsModal";
+// 2.115.0: the Seats field is read in lib/seats.ts (tested there).
+import { parseSeats } from "../lib/seats";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import { useDataChanged } from "../lib/dataChanged";
@@ -36,6 +38,8 @@ import { markRow, takeRow } from "../lib/lastRow";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import type { EventStatus, OrderRecord } from "../lib/types";
 import { completionStatus } from "../lib/completion";
+import { EventArt } from "../components/EventArt";
+import { quietly } from "../lib/diagnostics";
 
 // 2.0.66: the "Completed" indicator (see REDESIGN-2.0.66-REPORT.md). "Sold"
 // means nothing left in available/listed (a fully cancelled order counts as
@@ -144,27 +148,6 @@ const ORDER_SORT_LABELS: Record<string, string> = {
   furthest: "Furthest first",
 };
 
-/** Turns the free-form "Seats" input into one label per ticket.
- * Accepts a numeric range ("12-15" -> 12,13,14,15, either direction) or a
- * comma-separated list ("12, 14, 16A"). Blank input -> no seats assigned. */
-export function parseSeats(raw: string): string[] {
-  const trimmed = raw.trim();
-  if (!trimmed) return [];
-  const rangeMatch = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
-  if (rangeMatch) {
-    const start = parseInt(rangeMatch[1], 10);
-    const end = parseInt(rangeMatch[2], 10);
-    const step = start <= end ? 1 : -1;
-    const out: string[] = [];
-    for (let n = start; step > 0 ? n <= end : n >= end; n += step) out.push(String(n));
-    return out;
-  }
-  return trimmed
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-}
-
 export default function Orders() {
   const toast = useToast();
   const isNarrow = useNarrowTables();
@@ -235,8 +218,8 @@ export default function Orders() {
   }, [sortBy]);
 
   useEffect(() => {
-    api.listEventCategories().then(setCategories).catch(() => {});
-    api.listPlatforms().then(setPlatforms).catch(() => {});
+    api.listEventCategories().then(setCategories).catch(quietly("Orders: listEventCategories"));
+    api.listPlatforms().then(setPlatforms).catch(quietly("Orders: listPlatforms"));
   }, []);
 
   const load = () => {
@@ -520,74 +503,43 @@ export default function Orders() {
           }
         />
       ) : (
-        // 2.0.35: same proportional-percentage model Sales.tsx now uses -
-        // see that file's colgroup comment for the full history and the
-        // honest narrow-window tradeoff (applies here identically: Event
-        // is better off at every width than it used to be, the fixed-
-        // content columns are the ones trading some of their old
-        // guaranteed floor for the table growing with the window). Order
-        // also went 92px -> 120px (basis for its new percentage) in the
-        // same pass - the same truncating-10-char-code bug as Sale's own
-        // 2.0.33 fix ("ORD-000001" didn't fit in 92px either), flagged in
-        // the 2.0.33 report's FOUND BUT NOT TOUCHED section and folded in
-        // now rather than left for a separate round (Tickets.tsx has the
-        // identical column/bug - see that file's own comment).
-        // 2.0.37: same shift as Sales.tsx made - min-w-[1400px] plus a
-        // single percentage set couldn't stop a horizontal scrollbar below
-        // 1400px wide (only stop columns shrinking below their floor), and
-        // marko reported exactly that scrollbar on this table. Now two full
-        // percentage sets switched by the same shared useNarrowTables()
-        // breakpoint as every other table: Notes and Platform hide below
-        // 1690px (never Order/Event/Date/the money columns), everything
-        // else grows a little and switches to the smaller
-        // .th-c-narrow/.td-c-narrow. See Sales.tsx's own colgroup comment
-        // and PROTECTED-AREAS-NOTES.md (2.0.37 section) for the full
-        // reasoning and verification.
-        // 2.0.38: the 2.0.37 percentages above were STILL wrong for Order's
-        // own code column - allocated against the header text ("Order" = 5
-        // chars) rather than real codes, the exact same class of bug as the
-        // 2.0.33 note above, just reintroduced - see PROTECTED-AREAS-NOTES.md
-        // (2.0.38 section). Recomputed against real measured content this
-        // time, added the new Seats column (marko's request - shows every
-        // seat across the whole order, hides below the breakpoint like
-        // Notes/Platform), and switched Date to formatDateNumeric
-        // ("11.09.2026", full 4-digit year - marko's explicit format
-        // request) in place of the old locale-dependent formatDate call.
-        // Shared breakpoint moved to 1649px (was 1690px) - see
-        // useNarrowTables.ts.
+        // 2.0.35-2.0.66 sized these columns as percentages (history in
+        // PROTECTED-AREAS-NOTES.md); 2.115.0 replaced that with fixed widths -
+        // see the note on the table. Below the shared useNarrowTables()
+        // breakpoint, Seats, Notes and Platform still hide, never Order,
+        // Event, the date or the money.
         <div className="table-shell">
-          <table className="w-full table-fixed border-collapse">
+          {/* 2.115.0 (marko: "aj orders su problem oprav"): fixed widths, as
+              on the order's own ticket table and every other list - Event
+              takes what is left, and a window too narrow scrolls instead of
+              squeezing Qty or the badges into a letter per line. */}
+          <table className={`w-full table-fixed border-collapse ${isNarrow ? "min-w-[900px]" : "min-w-[1420px]"}`}>
             {isNarrow ? (
               <colgroup>
-                {selectionMode && <col className="w-8" />}
-                <col className="w-[10.488%]" />
-                <col className="w-[39.659%]" />
-                <col className="w-[8.659%]" />
-                <col className="w-[4.39%]" />
-                <col className="w-[8.293%]" />
-                <col className="w-[11.22%]" />
-                <col className="w-[8.293%]" />
-                {/* 2.0.66: new "Completed" column - width is my own estimate
-                    (not measured against real content like the rest of this
-                    colgroup), taken entirely from Event's share above. Flag
-                    to marko if this looks visually off. */}
-                <col className="w-[9%]" />
+                {selectionMode && <col className="w-10" />}
+                <col className="w-[112px]" />
+                <col />
+                <col className="w-[96px]" />
+                <col className="w-[56px]" />
+                <col className="w-[68px]" />
+                <col className="w-[108px]" />
+                <col className="w-[100px]" />
+                <col className="w-[128px]" />
               </colgroup>
             ) : (
               <colgroup>
-                {selectionMode && <col className="w-8" />}
-                <col className="w-[8.133%]" />
-                <col className="w-[16.838%]" />
-                <col className="w-[6.86%]" />
-                <col className="w-[9.194%]" />
-                <col className="w-[16.124%]" />
-                <col className="w-[11.74%]" />
-                <col className="w-[3.678%]" />
-                <col className="w-[6.506%]" />
-                <col className="w-[8.699%]" />
-                <col className="w-[5.728%]" />
-                {/* 2.0.66: see the narrow colgroup's identical comment above. */}
-                <col className="w-[6.5%]" />
+                {selectionMode && <col className="w-10" />}
+                <col className="w-[124px]" />
+                <col />
+                <col className="w-[104px]" />
+                <col className="w-[170px]" />
+                <col className="w-[180px]" />
+                <col className="w-[130px]" />
+                <col className="w-[60px]" />
+                <col className="w-[72px]" />
+                <col className="w-[116px]" />
+                <col className="w-[104px]" />
+                <col className="w-[128px]" />
               </colgroup>
             )}
             <thead>
@@ -673,7 +625,11 @@ export default function Orders() {
                         round; falls back to this table's existing
                         overflow-x-auto scroll at the extreme minimum, same
                         as that comment already documents for Event alone. */}
+                    {/* 2.116.0: the event's picture - 28px reaching into
+                        the cell's padding, so this dense list keeps its
+                        row height. */}
                     <div className="flex items-center gap-1.5">
+                      <EventArt eventId={o.eventId} name={o.eventName} size="row" className="mr-0.5" />
                       <span className="truncate">{o.eventName}</span>
                       {o.categoryName && o.categoryColorSlot !== null && (
                         <span className="shrink-0">
@@ -856,9 +812,9 @@ function OrderFormModal({
     api
       .listEvents()
       .then((all) => setEvents(all.filter((ev) => !isEventDone(ev))))
-      .catch(() => {});
-    api.listPlatforms().then(setPlatforms).catch(() => {});
-    api.listTicketTypes().then(setTicketTypeOptions).catch(() => {});
+      .catch(quietly("New order: list events"));
+    api.listPlatforms().then(setPlatforms).catch(quietly("Orders: listPlatforms"));
+    api.listTicketTypes().then(setTicketTypeOptions).catch(quietly("Orders: listTicketTypes"));
     setEventId(presetEventId ?? "");
     setPlatformId(null);
     setPurchaseDate(todayIso());

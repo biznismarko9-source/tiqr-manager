@@ -18,8 +18,10 @@ import {
   type RowProblem,
 } from "../components/ui";
 import AiImportPanel from "../components/AiImportPanel";
-import { CURRENCIES, parseSeats, TICKET_TYPES } from "./Orders";
+import { CURRENCIES, TICKET_TYPES } from "./Orders";
+import { parseSeats, seatsForCount } from "../lib/seats";
 import { useToast } from "../lib/toast";
+import { quietly } from "../lib/diagnostics";
 
 /**
  * New Order, as ROWS inside a modal over the Inventory list.
@@ -110,6 +112,22 @@ function blankRow(prev?: Row): Row {
   };
 }
 
+/** 2.115.0, marko: "pri new order nejde menit kvantita manualne". The count
+ *  can always be typed. Numbered seats in a run follow it from their first
+ *  seat - "23" and a count of 3 is 23-25; anything else stays as typed, and
+ *  a count that does not match it is pointed out. */
+function withQty(r: Row, raw: string): Row {
+  const qty = raw.replace(/[^\d]/g, "");
+  const seats = seatsForCount(r.seats, parseInt(qty, 10));
+  return seats === null ? { ...r, qty } : { ...r, qty, seats };
+}
+
+/** Seats typed: the count follows them. */
+function withSeats(r: Row, seats: string): Row {
+  const count = parseSeats(seats).length;
+  return { ...r, seats, qty: count > 0 ? String(count) : r.qty };
+}
+
 /** How many tickets a row is worth: the seat list wins when there is one,
  *  because the backend requires one seat per ticket. */
 function rowQty(r: Row): number {
@@ -151,14 +169,20 @@ function validate(rows: Row[]): RowProblem[] {
   const out: RowProblem[] = [];
   rows.forEach((r, i) => {
     const seats = parseSeats(r.seats);
-    // Seats win over the typed count - that is `rowQty`'s own rule, and the
-    // Ks cell shows the seat count read-only when they are present, so the
-    // two can no longer disagree and there is nothing here to check.
+    const qty = parseInt(r.qty, 10);
     if (seats.length === 0) {
-      const qty = parseInt(r.qty, 10);
       if (!r.qty.trim()) out.push({ row: i, field: "qty", message: "quantity or seats are missing", kind: "missing" });
       else if (!Number.isFinite(qty) || qty < 1)
         out.push({ row: i, field: "qty", message: "quantity must be at least 1", kind: "invalid" });
+    } else if (r.qty.trim() && qty !== seats.length) {
+      // 2.115.0: the count is typed now, so it can disagree with seats that
+      // are not one numbered run - one seat per ticket, or no seats.
+      out.push({
+        row: i,
+        field: "qty",
+        message: `${qty} tickets but ${seats.length} seat${seats.length === 1 ? "" : "s"} - one seat per ticket, or leave the seats empty`,
+        kind: "invalid",
+      });
     }
     if (!r.price.trim()) out.push({ row: i, field: "price", message: "price per ticket is missing", kind: "missing" });
     else if (decimalStringToCents(r.price) === null)
@@ -228,9 +252,9 @@ export default function OrderRowsModal({
 
   useEffect(() => {
     if (!open) return;
-    api.listEvents().then(setEvents).catch(() => {});
-    api.listPlatforms().then(setPlatforms).catch(() => {});
-    api.listTicketTypes().then(setTicketTypeOptions).catch(() => {});
+    api.listEvents().then(setEvents).catch(quietly("OrderRowsModal: listEvents"));
+    api.listPlatforms().then(setPlatforms).catch(quietly("OrderRowsModal: listPlatforms"));
+    api.listTicketTypes().then(setTicketTypeOptions).catch(quietly("OrderRowsModal: listTicketTypes"));
   }, [open]);
 
   // Every open starts clean - this component is mounted permanently by the
@@ -372,7 +396,10 @@ export default function OrderRowsModal({
               // `g.seats` arrives already expanded to one label per ticket
               // ("21","22",...); this field is the text marko edits, so it is
               // joined back into the same comma form parseSeats reads.
-              if (g.seats?.length) r.seats = g.seats.join(", ");
+              if (g.seats?.length) {
+                r.seats = g.seats.join(", ");
+                r.qty = String(g.seats.length);
+              }
               return r;
             });
 
@@ -429,32 +456,24 @@ export default function OrderRowsModal({
           <tr key={i}>
             <RowNumber n={i + 1} />
             <td className="td-c w-[78px]">
-              {/* 2.46.1: once seats are typed, the count IS the number of
-                  seats (see rowQty). marko: "odstran tam to puzdro a urob to
-                  tak ze tam vidno ten pocet" - so it is the number itself, not
-                  a box holding a number you cannot edit. A greyed-out input is
-                  a control that refuses you; a figure is just the answer. */}
-              {parseSeats(r.seats).length > 0 ? (
-                <span
-                  className="block px-1 text-right text-sm font-medium tabular-nums text-slate-900 dark:text-slate-100"
-                  title="The count comes from the seats"
-                >
-                  {parseSeats(r.seats).length}
-                </span>
-              ) : (
-                <Input
-                  /* 2.47.1: NOT type="number". marko sent a screenshot of the
-                     Ks cell showing nothing but the stepper arrows - WebKit
-                     draws them inside the box, and in a narrow cell they sit
-                     on top of the digits. A text field with a numeric keypad
-                     hint has no stepper and no hidden number. */
-                  inputMode="numeric"
-                  value={r.qty}
-                  onChange={(e) => patch(i, { qty: e.target.value.replace(/[^\d]/g, "") })}
-                  className={`text-right ${cellError(shown, i, "qty")}`}
-                  aria-label={`Quantity, row ${i + 1}`}
-                />
-              )}
+              {/* 2.115.0: always a box you can type in (marko: "pri new
+                  order nejde menit kvantita manualne") - until now, once
+                  seats were typed the count was only their number. Typed
+                  seats still set it; a typed count moves numbered seats
+                  with it (withQty). */}
+              <Input
+                /* 2.47.1: NOT type="number". marko sent a screenshot of the
+                   Ks cell showing nothing but the stepper arrows - WebKit
+                   draws them inside the box, and in a narrow cell they sit
+                   on top of the digits. A text field with a numeric keypad
+                   hint has no stepper and no hidden number. */
+                inputMode="numeric"
+                value={r.qty}
+                onChange={(e) => setRows((rs) => rs.map((x, k) => (k === i ? withQty(x, e.target.value) : x)))}
+                className={`text-right ${cellError(shown, i, "qty")}`}
+                aria-label={`Quantity, row ${i + 1}`}
+                title={parseSeats(r.seats).length > 0 ? "Numbered seats in a row follow the count from their first seat" : undefined}
+              />
             </td>
             <td className="td-c w-[150px]">
               <Select value={r.ticketType} onChange={(e) => patch(i, { ticketType: e.target.value })} aria-label="Type">
@@ -491,7 +510,7 @@ export default function OrderRowsModal({
             <td className="td-c w-[150px]">
               <Input
                 value={r.seats}
-                onChange={(e) => patch(i, { seats: e.target.value })}
+                onChange={(e) => setRows((rs) => rs.map((x, k) => (k === i ? withSeats(x, e.target.value) : x)))}
                 placeholder="23-24"
                 className={cellError(shown, i, "seats")}
                 aria-label="Seats"

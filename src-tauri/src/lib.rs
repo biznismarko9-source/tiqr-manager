@@ -2,6 +2,7 @@ mod ai_categorize;
 mod codes;
 mod commands;
 mod db;
+mod diag;
 mod error;
 mod finance;
 mod fx;
@@ -84,11 +85,23 @@ pub fn run() {
             }
             let handle = app.handle().clone();
             let db_path = db::resolve_db_path(&handle).map_err(|e| e.to_string())?;
-            let conn = db::open_live_connection(&db_path).map_err(|e| e.to_string())?;
-            db::run_migrations(&conn).map_err(|e| e.to_string())?;
+            // 2.116.0: the log and the crash notes, beside the data - set up
+            // before anything else can fail, so even that failure is kept.
+            if let Some(dir) = db_path.parent() {
+                diag::init(dir.join("logs"));
+            }
+            diag::log(diag::Severity::Info, "start", &format!("TIQR {} starting", env!("CARGO_PKG_VERSION")));
+            let conn = db::open_live_connection(&db_path).map_err(|e| {
+                diag::log(diag::Severity::Fatal, "start", &format!("the database could not be opened: {e}"));
+                e.to_string()
+            })?;
+            db::run_migrations(&conn).map_err(|e| {
+                diag::log(diag::Severity::Fatal, "start", &format!("the database could not be brought up to date: {e}"));
+                e.to_string()
+            })?;
             // 2.113.0: tokens and keys out of the database file (secrets.rs).
             if let Err(e) = secrets::adopt_from_database(&conn) {
-                eprintln!("TIQR: could not move sign-ins out of the database: {e}");
+                diag::log(diag::Severity::Error, "start", &format!("could not move sign-ins out of the database: {e}"));
             }
             // 2.110.0: settings set up before this release get a stamp, so
             // the other computer can receive them (shared_settings.rs).
@@ -119,6 +132,19 @@ pub fn run() {
             commands::events::delete_event,
             commands::events::bulk_delete_events,
             commands::events::detect_event_categories,
+            // 2.116.0: the log, crash notes and the diagnostic report.
+            diag::report_client_error,
+            diag::take_crash_report,
+            diag::export_diagnostics,
+            diag::save_diagnostics,
+            // 2.116.0: a picture for every event.
+            commands::event_artwork::event_artwork_map,
+            commands::event_artwork::event_artwork_images,
+            commands::event_artwork::event_artwork_suggest,
+            commands::event_artwork::event_artwork_decide,
+            commands::event_artwork::event_artwork_backfill,
+            commands::event_artwork::get_event_artwork_options,
+            commands::event_artwork::set_event_artwork_options,
             // 2.7.0: AI Import Assistant. Read-only and database-free by
             // construction - see commands/ai_import.rs's module doc comment.
             commands::ai_import::analyze_import_image,
@@ -283,6 +309,16 @@ pub fn run() {
             commands::mail::list_mail_mutes,
             commands::mail::mute_mail_sender,
             commands::mail::unmute_mail_sender,
+            commands::mail::mute_mail_subject,
+            commands::mail::set_mail_screen_options,
+            commands::mail::set_mail_read_speed,
+            commands::mail_share::mail_share_info,
+            commands::mail_share::mail_share_export,
+            commands::mail_share::mail_share_import,
+            commands::mail_share::mail_share_cursor,
+            commands::mail_share::mail_share_follow,
+            commands::mail_share::set_mail_share,
+            commands::mail::unmute_mail_subject,
             commands::mail::star_mail,
             commands::mail::list_mail_folder_ids,
             commands::mail_cleanup::scan_promotions,

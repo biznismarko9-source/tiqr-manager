@@ -47,6 +47,8 @@ import { markRow, takeRow } from "../lib/lastRow";
 import SaleRowsModal from "./SaleRowsModal";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import { completionStatus } from "../lib/completion";
+import { EventArt } from "../components/EventArt";
+import { quietly } from "../lib/diagnostics";
 
 // 2.0.66: the new "Completed" indicator (see REDESIGN-2.0.66-REPORT.md) -
 // deliberately separate from SALES_TABS above, which keeps its existing,
@@ -203,9 +205,9 @@ export default function Sales() {
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
   useEffect(() => {
-    api.listEvents().then(setEvents).catch(() => {});
-    api.listPlatforms().then(setPlatforms).catch(() => {});
-    api.listEventCategories().then(setCategories).catch(() => {});
+    api.listEvents().then(setEvents).catch(quietly("Sales: listEvents"));
+    api.listPlatforms().then(setPlatforms).catch(quietly("Sales: listPlatforms"));
+    api.listEventCategories().then(setCategories).catch(quietly("Sales: listEventCategories"));
   }, []);
 
   // 1.8.3 (section 11): lets the Dashboard's "New Sale" Quick Action open
@@ -918,7 +920,10 @@ export default function Sales() {
                     }
                   >
                     {g.eventId && g.eventName ? (
-                      <div>
+                      // 2.116.0: the event's picture beside its two lines.
+                      <div className="flex items-center gap-2.5">
+                      <EventArt eventId={g.eventId} name={g.eventName} size="sm" className="-my-1" />
+                      <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
                           <span className="truncate">{g.eventName}</span>
                           {g.categoryName && g.categoryColorSlot !== null && (
@@ -932,6 +937,7 @@ export default function Sales() {
                             {g.eventCity}
                           </span>
                         )}
+                      </div>
                       </div>
                     ) : (
                       <span className="italic text-slate-500 dark:text-slate-400">Mixed events</span>
@@ -1119,7 +1125,7 @@ function SaleFormModal({
     setBuyerReference("");
     setNotes("");
     setError(null);
-    api.listPlatforms().then(setPlatforms).catch(() => {});
+    api.listPlatforms().then(setPlatforms).catch(quietly("Sales: listPlatforms"));
   }, [open]);
 
   // 2.0.57: called when leaving the "pick" step - defaults the sale currency
@@ -1200,7 +1206,7 @@ function SaleFormModal({
       api
         .listOrders({ search: orderQuery || undefined, status: "available,listed" })
         .then((res) => setOrderOptions(res.slice(0, 25)))
-        .catch(() => {});
+        .catch(quietly("New sale: list orders"));
     }, 200);
     return () => clearTimeout(t);
   }, [open, step, orderQuery, activeOrder]);
@@ -1213,7 +1219,7 @@ function SaleFormModal({
     api
       .listTickets({ orderId: activeOrder.id, status: "available,listed", sortBy: "created", sortDir: "desc" })
       .then(setOrderTicketOptions)
-      .catch(() => {});
+      .catch(quietly("New sale: list tickets"));
   }, [open, step, activeOrder]);
 
   // If every ticket gets removed while on the details step, drop back to

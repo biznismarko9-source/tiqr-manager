@@ -16,14 +16,19 @@ step, before appending to `CHANGELOG.md`.
 TIQR Manager - a local-first, offline-by-default desktop app (Tauri 2 +
 React/TypeScript frontend, Rust + SQLite backend) for ticket resellers.
 No server of its own; the only outbound calls are the user's own machine
-talking directly to Google Sheets, Firebase Auth, an FX-rate API, and (for
-Price Checker) marketplace pages the user opens himself. Since 2.112.0, live
+talking directly to Google Sheets, Firebase Auth, an FX-rate API, (for
+Price Checker) marketplace pages the user opens, and - since 2.116.0, for
+event pictures, switchable - Deezer's and Wikipedia's public APIs, sent an
+event's name and nothing else. Since 2.112.0, live
 sync between marko's computers also goes through Firestore, under the
-signed-in account's own `users/{uid}` (opt-in per computer).
+signed-in account's own `users/{uid}` (opt-in per computer). Since 2.115.0,
+while both computers run, one reads Gmail and forwards what it stored to
+the other through the same space (`users/{uid}/mail`), each batch deleted
+once stored.
 
 ## Version
 
-**2.114.3**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.116.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, and - in the release zip, no longer in the
 repository since 2.113.0 (see `RELEASE.md`) - `release.ps1`'s `$Version` and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
@@ -2648,6 +2653,108 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.116.0 - a picture for every event; a stability and diagnostics pass**
+(report: `history/REDESIGN-2.116.0-REPORT.md`; asked in English as "Smart
+Event Artwork + Full Stability & Reliability Audit"):
+* `commands/event_artwork.rs` + migration 047. Three things kept apart: the
+  event, the SUBJECT (`name:<folded name>` - every event of one name shares
+  it; a match keeps both sides; never fuzzy) and the SEARCH
+  (`artist:coldplay` - what Deezer / Wikipedia are asked; "Coldplay -
+  Prague" and "- Vienna" share it). `event_artworks` holds choices made by
+  hand and travels (MERGE_TABLES; uid derived from the key, rows never
+  deleted - "auto" is a state); `artwork_lookups` holds the services'
+  answers and the automatic pick, stays here and is bookkeeping for the
+  Drive flag. What an event shows is worked out on every read
+  (`shown_for`): event-only choice, subject choice, a hand-picked picture
+  of the same search, the certain automatic pick, nothing. Confidence per
+  candidate with reasons (`score_deezer`, `score_wikipedia`): high is shown,
+  medium waits for a yes, low never. Network only off the window thread and
+  never under the DB lock; one search per subject at a time (`Flight`),
+  each service paced and paused after 429/quota, three minutes of rest
+  after "offline", failures backed off 10 min -> 24 h, a failure never
+  replaces a certain answer. Pictures only from `*.dzcdn.net` and
+  `upload.wikimedia.org` through `mail_view::fetch_picture`, stored as
+  checked data URLs. `Web` trait so the tests (33 in the module, 1 in
+  live_sync) use fixtures only.
+* Frontend: `lib/artworkStore.ts` (one map and one picture cache for every
+  screen, batched, single-flight, stale replies dropped, LRU 400; tested),
+  `lib/eventArtwork.ts` (store + background search driver +
+  `useArtworkSuggestion` with request ids + upload shrink), `components/
+  EventArt.tsx` (fixed-size frame, placeholder, alt text; sizes row 28 / sm
+  40 / md 56 / lg 72 with negative margins so table rows keep their
+  height), `components/ArtworkPicker.tsx` (deferred in the forms, immediate
+  on the event page). Settings -> Integrations -> Event pictures switch
+  (`event_artwork_auto`, per computer).
+* Stability: `src-tauri/src/diag.rs` (redacted `logs/tiqr.log` with
+  rotation, panic hook -> `last-crash.txt` shown once by
+  `take_crash_report`, `export_diagnostics` / `save_diagnostics`,
+  `report_client_error`); `lib/diagnostics.ts` (+ `quietly`, used at the 59
+  former `.catch(() => {})`), `lib/diagnosticsSink.ts` (window errors and
+  unhandled rejections), `components/ErrorBoundary.tsx` around every page
+  and the app; one Escape handler for all dialogs (top one only); atomic
+  migrations (`db::apply_migrations`); `detect_event_categories` async and
+  lock-free during AI calls; `discord::day` no longer slices inside a
+  character.
+
+**2.115.1 - a sale's row and seats are hidden in Discord** (report:
+`history/REDESIGN-2.115.1-REPORT.md`; marko: "ak pride new sale tak vo
+webhooku by malo byt hide row a seats"):
+* `discord::seat_lines(tickets, hide)`: with `hide`, each group's row and
+  seats are a spoiler (escaped first, then `||...||`), the section stays in
+  sight, a bare count is never hidden. `sale_embed` hides per
+  `DiscordChannelConfig.sale_options.hide_seats` (`DiscordSaleConfig`,
+  default on - a config without the block hides); the order embed never.
+  `NotificationStatus.discord_sale_options` / `NotificationConfigInput.
+  discord_sale_options`; the switch sits under Sales in Settings ->
+  Integrations -> Discord.
+* `components/Discord.tsx::discordInline` reads `||` and the preview draws
+  a spoiler as a dark bar that opens on a click.
+
+**2.115.0 - one computer reads Gmail for both, mute by subject, Mail the way
+marko wants it** (report: `history/REDESIGN-2.115.0-REPORT.md`; marko: "ak
+naraz tak len jeden a ten to bude posielat tomu druhemu aby to bolo
+obmedzene", "mute nastavit aj podla objectu", "celkovo do mailu pridat viac
+funkcii, nastaveni"):
+* Sharing the reading: `src/lib/mailShareCore.ts` (pure: ids, lease and
+  presence rules, parsing, the sentence), `mailShareSession.ts` (the
+  session against Firestore, every dependency injected), `mailShare.ts`
+  (the app's wiring; Layout starts it beside live sync and hands the lease
+  back on close). `users/{uid}/mail`: `lease~{fnv64(mailbox)}` (who reads,
+  renewed every `TICK_MS` = 60 s), `cursor~{follower}~{reader}` (progress
+  and presence, plus `nudge` for Sync), `drop~{follower}~{12}` (one batch,
+  deleted once stored). Staleness is judged by each computer's own clock
+  against what it saw change (`seeLease`/`takesLease`, `presentUntil`,
+  `LEASE_STALE_MS` = 180 s, `LEASE_ABANDONED_MS` = 15 min). Stop-and-wait
+  per follower; drops addressed to a computer are stored whatever its role.
+* Rust `commands/mail_share.rs`: `export` in (`labels_at`, id) order up to
+  600 kB, `import` (one transaction: new mail as from Gmail - rules,
+  Automatic, no Discord "arrived" - newer labels only, dequeue, cursor),
+  `cursor` (persists `first_cursor` the first time: read-through mailbox ->
+  a week before its last read, else the start), `info` (incl. `paused`).
+  `mail_sync::set_following` (240 s, renewed every tick) makes the reader
+  stand by; `following_result` is the `mail-sync` event an import sends.
+  Mail store `SCHEMA_V6`. firestore.rules: the `users/{uid}/mail` block
+  with `validMail`. `scripts/mail-share-emulator-check.ts` (13 checks).
+* Mute by subject: `MailMute.kind` ("sender"/"subject"), SQL function
+  `tiqr_fold` (`mail_facts::fold_words`, registered on every connection),
+  `mute_mail_subject`/`unmute_mail_subject`; `lib/mailMute.ts::foldWords`
+  mirrors it, `subjectSuggestion` proposes the words.
+* Mail screen choices (`set_mail_screen_options`, shared): `mail_mark_read`
+  (open/delay/manual - `get_mail_view` marks read only for "open"),
+  `mail_after_move`, `mail_list_preview`/`_tags`/`_compact`,
+  `mail_start_folder`, `mail_shortcuts`; `mail_read_speed` (per computer,
+  `set_mail_read_speed`; gentle = 20 a run, 2 workers, 2 s between runs).
+* Pictures: every wanted picture keeps its `tiqr-img:` token in the kept
+  body and is listed in `mail_bodies.images` (`KeptPictures` v2);
+  `kept_view` copies missing ones again (at most every 5 min per message);
+  a body kept before 2.115.0 that lost one is downloaded again once.
+  Fetching: browser headers, every resolved address (IPv4 first), `//`
+  sources, `same_cid`, AVIF, 150 a message, 8 at a time.
+* Screens: draggable list/message edge (`tiqr:mail-list-width`), keyboard
+  keys, sidebar 176 px and foldable to icons (`tiqr:rail`), New order's Qty
+  always typeable (`lib/seats.ts::seatsForCount`), Orders and Order
+  Detail's ticket table on fixed column widths.
 
 **2.114.3 - mail catches up on every computer, and shows how far**
 (report: `history/REDESIGN-2.114.3-REPORT.md`; marko: "na macu mam 100 000

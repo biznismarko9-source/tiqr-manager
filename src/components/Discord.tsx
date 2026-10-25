@@ -117,7 +117,7 @@ export function SendToDiscordButton({
 
 // ---------------------------------------------------------------------------
 // The preview. Discord's own Markdown, as much of it as TIQR's messages use:
-// **bold**, \-escapes, "> " quotes and <t:…> times.
+// **bold**, ||spoilers||, \-escapes, "> " quotes and <t:…> times.
 // ---------------------------------------------------------------------------
 
 const RELATIVE = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
@@ -147,15 +147,16 @@ function discordTime(seconds: number, style: string): string {
 }
 
 /** One line of Discord text as React nodes. Exported for its test. */
-export function discordInline(text: string): { text: string; bold: boolean }[] {
-  const out: { text: string; bold: boolean }[] = [];
+export function discordInline(text: string): { text: string; bold: boolean; spoiler: boolean }[] {
+  const out: { text: string; bold: boolean; spoiler: boolean }[] = [];
   let bold = false;
+  let spoiler = false;
   let buf = "";
   const flush = () => {
-    if (buf) out.push({ text: buf, bold });
+    if (buf) out.push({ text: buf, bold, spoiler });
     buf = "";
   };
-  const re = /\\([^A-Za-z0-9\s])|\*\*|<t:(-?\d+)(?::([a-zA-Z]))?>/g;
+  const re = /\\([^A-Za-z0-9\s])|\*\*|\|\||<t:(-?\d+)(?::([a-zA-Z]))?>/g;
   let last = 0;
   for (let m = re.exec(text); m; m = re.exec(text)) {
     buf += text.slice(last, m.index);
@@ -164,11 +165,36 @@ export function discordInline(text: string): { text: string; bold: boolean }[] {
     else if (m[0] === "**") {
       flush();
       bold = !bold;
+    } else if (m[0] === "||") {
+      // 2.115.1: a sale's row and seats, a person's details.
+      flush();
+      spoiler = !spoiler;
     } else buf += discordTime(Number(m[2]), m[3] ?? "f");
   }
   buf += text.slice(last);
   flush();
   return out;
+}
+
+/** Hidden the way Discord hides it: a dark bar until clicked. */
+function Spoiler({ children }: { children: ReactNode }) {
+  const [shown, setShown] = useState(false);
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      title={shown ? undefined : "Hidden until clicked - as in Discord"}
+      onClick={() => setShown(true)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") setShown(true);
+      }}
+      className={`rounded px-0.5 transition ${
+        shown ? "bg-slate-500/20" : "cursor-pointer select-none bg-slate-700 text-transparent dark:bg-slate-900"
+      }`}
+    >
+      {children}
+    </span>
+  );
 }
 
 function DiscordText({ text }: { text: string }) {
@@ -177,15 +203,16 @@ function DiscordText({ text }: { text: string }) {
     <>
       {lines.map((line, i) => {
         const quote = line.startsWith("> ");
-        const parts = discordInline(quote ? line.slice(2) : line).map((p, j) =>
-          p.bold ? (
+        const parts = discordInline(quote ? line.slice(2) : line).map((p, j) => {
+          const text = p.bold ? (
             <strong key={j} className="font-semibold text-slate-900 dark:text-white">
               {p.text}
             </strong>
           ) : (
             <span key={j}>{p.text}</span>
-          ),
-        );
+          );
+          return p.spoiler ? <Spoiler key={j}>{text}</Spoiler> : text;
+        });
         return quote ? (
           <div key={i} className="my-0.5 border-l-4 border-slate-300 pl-2 dark:border-slate-600">
             {parts}

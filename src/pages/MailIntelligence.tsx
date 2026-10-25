@@ -28,6 +28,8 @@ import { copyText } from "../lib/clipboard";
 import { lastMailSync, onMailSynced, requestMailSync } from "../lib/mailSync";
 import { mergeTopPage } from "../lib/mailRows";
 import { isReading, lastSyncText, laneViews, syncHeadline, type LaneTone, storedVsGmail } from "../lib/mailSyncStatus";
+import { askReaderToSync, nudgeMailShare, useMailShareView } from "../lib/mailShare";
+import { shareLine } from "../lib/mailShareCore";
 import {
   type MailConnectionStatus,
   type MailFolderCount,
@@ -39,7 +41,7 @@ import {
 } from "../lib/types";
 import { Badge, Button, Card, ConfirmDialog, EmptyState, Input, PageHeader, Spinner } from "../components/ui";
 import { IconBellOff, IconFolder, IconMail, IconPaperclip, IconPencil, IconPlus, IconStar, IconTrash } from "../components/icons";
-import { muteState } from "../lib/mailMute";
+import { muteKind, muteState, type MuteKind } from "../lib/mailMute";
 import { MailSettingsPane } from "../components/MailSettingsPane";
 import { PromoCleanup } from "../components/PromoCleanup";
 import {
@@ -246,6 +248,9 @@ const MailRow = memo(function MailRow({
   active,
   checked,
   movedName,
+  preview,
+  tags,
+  compact,
   onOpen,
   onToggle,
   onDragStart,
@@ -255,6 +260,10 @@ const MailRow = memo(function MailRow({
   m: MailMessageSummary;
   active: boolean;
   checked: boolean;
+  /** 2.115.0: the list's look (Mail -> Settings -> Mail screen). */
+  preview: boolean;
+  tags: boolean;
+  compact: boolean;
   /** Where it was moved to, when that is not the folder on screen. */
   movedName: string | null;
   onOpen: (id: number) => void;
@@ -269,8 +278,9 @@ const MailRow = memo(function MailRow({
       type="button"
       onClick={onClick}
       draggable
+      data-mail-row={m.id}
       onDragStart={(e) => onDragStart(m.id, e)}
-      className={`group w-full border-b border-slate-200 px-3 py-2.5 text-left transition dark:border-slate-800 ${
+      className={`group w-full border-b border-slate-200 px-3 ${compact ? "py-1.5" : "py-2.5"} text-left transition dark:border-slate-800 ${
         active ? "bg-brand-600/10" : checked ? "bg-brand-500/[0.05]" : "hover:bg-surface-muted"
       }`}
     >
@@ -345,11 +355,12 @@ const MailRow = memo(function MailRow({
           {m.otpCode}
         </span>
       ) : (
+        preview &&
         m.snippet && <p className="mt-0.5 truncate text-[11px] text-slate-400 dark:text-slate-500">{m.snippet}</p>
       )}
-      {((m.category !== "other" && !isJunk(m)) || movedName) && (
-        <div className="mt-1 flex flex-wrap items-center gap-1.5">
-          {m.category !== "other" && !isJunk(m) && <Badge tone="sold">{categoryLabel(m.category)}</Badge>}
+      {((tags && m.category !== "other" && !isJunk(m)) || movedName) && (
+        <div className={`${compact ? "mt-0.5" : "mt-1"} flex flex-wrap items-center gap-1.5`}>
+          {tags && m.category !== "other" && !isJunk(m) && <Badge tone="sold">{categoryLabel(m.category)}</Badge>}
           {movedName && (
             <span className="inline-flex items-center gap-1 rounded bg-surface-muted px-1.5 py-px text-[10.5px] text-slate-500 dark:text-slate-400">
               <IconFolder className="h-2.5 w-2.5" />
@@ -362,9 +373,50 @@ const MailRow = memo(function MailRow({
   );
 });
 
+/* 2.115.0: where Mail opens (Mail -> Settings -> Mail screen). The choice is
+   remembered here as well, so the very first look is already the right
+   folder; "Where I left off" is this computer's own. */
+const START_KEY = "tiqr:mail-start";
+const LAST_KEY = "tiqr:mail-folder";
+/* 2.115.0: the list's width, dragged by its edge. */
+const LIST_WIDTH_KEY = "tiqr:mail-list-width";
+const LIST_DEFAULT = 360;
+const LIST_MIN = 260;
+const LIST_MAX = 720;
+const READER_MIN = 340;
+
+function readStorage(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStorage(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // A window that keeps nothing: Mail opens in the Inbox next time.
+  }
+}
+
+function firstFolder(): string {
+  const choice = readStorage(START_KEY);
+  if (choice === "important" || choice === "starred") return choice;
+  if (choice === "last") return readStorage(LAST_KEY) || "inbox";
+  return "inbox";
+}
+
+/** A key pressed while typing is the typing's, not a shortcut. */
+function typing(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  return !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
+}
+
 export default function MailIntelligence() {
   const toast = useToast();
-  const [folder, setFolder] = useState<string>("inbox");
+  const [folder, setFolder] = useState<string>(firstFolder);
   const [status, setStatus] = useState<MailConnectionStatus | null>(null);
   const [labels, setLabels] = useState<MailLabel[]>([]);
   const [localFolders, setLocalFolders] = useState<MailLocalFolder[]>([]);
@@ -378,6 +430,8 @@ export default function MailIntelligence() {
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState<string | null>(null);
   const [lastRun, setLastRun] = useState<MailSyncResult | null>(lastMailSync());
+  /** 2.115.0: whether the other computer reads Gmail for this one. */
+  const share = useMailShareView();
   const [nudged, setNudged] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -548,6 +602,24 @@ export default function MailIntelligence() {
     setConfirmDelete(false);
   };
 
+  /* 2.115.0: where Mail opens. The choice is remembered for next time; the
+     first time it is known, Mail goes there - unless a folder was picked
+     already. */
+  const startedIn = useRef<string | null>(folder);
+  useEffect(() => {
+    if (!status) return;
+    writeStorage(START_KEY, status.startFolder ?? "inbox");
+    const from = startedIn.current;
+    startedIn.current = null;
+    if (from === null || folder !== from) return;
+    const want = status.startFolder === "last" ? readStorage(LAST_KEY) || "inbox" : status.startFolder ?? "inbox";
+    if (want !== folder) pick(want);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.startFolder, status !== null]);
+  useEffect(() => {
+    if (folder !== SETTINGS_FOLDER) writeStorage(LAST_KEY, folder);
+  }, [folder]);
+
   const onOpen = useCallback((id: number) => setOpenId(id), []);
   const onToggle = useCallback(
     (id: number) =>
@@ -618,6 +690,21 @@ export default function MailIntelligence() {
    *  folder and the counts are read again. */
   const settle = (ids: number[], gone: boolean, patch?: Partial<MailMessageSummary>) => {
     const hit = new Set(ids);
+    // 2.115.0: the open one went - the next older, the next newer, or back
+    // to the list, as marko chose. The list runs newest first.
+    if (gone && openId !== null && hit.has(openId)) {
+      const list = rowsRef.current;
+      const at = list.findIndex((m) => m.id === openId);
+      const step = status?.afterMove === "older" ? 1 : status?.afterMove === "newer" ? -1 : 0;
+      let next: number | null = null;
+      for (let i = at + step; step !== 0 && at >= 0 && i >= 0 && i < list.length; i += step) {
+        if (!hit.has(list[i].id)) {
+          next = list[i].id;
+          break;
+        }
+      }
+      setOpenId(next);
+    }
     setRows((prev) =>
       gone ? prev.filter((m) => !hit.has(m.id)) : patch ? prev.map((m) => (hit.has(m.id) ? { ...m, ...patch } : m)) : prev,
     );
@@ -690,22 +777,97 @@ export default function MailIntelligence() {
     [loadHeader, toast],
   );
 
+  /* 2.115.0: keys (Mail -> Settings -> Mail screen): up and down (or k and j)
+     go through the list, s stars, u marks read or unread, Delete moves the
+     open message to the Trash - never further - and / goes to the search.
+     Never while typing, never under a dialog, and never inside the message
+     itself, which keeps its own keys. */
+  const keysRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  keysRef.current = (e: KeyboardEvent) => {
+    if (!status?.shortcuts || folder === SETTINGS_FOLDER) return;
+    if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || typing(e.target)) return;
+    if (document.querySelector('[role="dialog"]')) return;
+    const list = rowsRef.current;
+    const at = list.findIndex((m) => m.id === openId);
+    const current = at >= 0 ? list[at] : null;
+    const go = (i: number) => {
+      const m = list[Math.max(0, Math.min(list.length - 1, i))];
+      if (!m) return;
+      setOpenId(m.id);
+      const row = document.querySelector<HTMLElement>(`[data-mail-row="${m.id}"]`);
+      row?.focus({ preventScroll: true });
+      row?.scrollIntoView({ block: "nearest" });
+    };
+    switch (e.key) {
+      case "ArrowDown":
+      case "j":
+        e.preventDefault();
+        go(at + 1);
+        break;
+      case "ArrowUp":
+      case "k":
+        e.preventDefault();
+        go(at < 0 ? 0 : at - 1);
+        break;
+      case "s":
+        if (current) onStar(current.id, !current.isStarred);
+        break;
+      case "u":
+        if (current) {
+          const unread = !current.isUnread;
+          void api
+            .setMailRead(current.id, !unread)
+            .then(() => {
+              setRows((prev) => prev.map((m) => (m.id === current.id ? { ...m, isUnread: unread } : m)));
+              void loadHeader().catch(() => undefined);
+            })
+            .catch((err) => toast.error(errMsg(err)));
+        }
+        break;
+      case "Delete":
+      case "#":
+        // In the Trash, Delete forever stays a button of its own.
+        if (current && folder !== "trash") {
+          e.preventDefault();
+          deleteIds([current.id]);
+        }
+        break;
+      case "/":
+        e.preventDefault();
+        document.getElementById("mail-search")?.focus();
+        break;
+    }
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keysRef.current(e);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   /** Its mail leaves every folder but Muted - the list is read again. */
-  const mute = async (who: string, days: number | null) => {
+  const mute = async (kind: MuteKind, who: string, days: number | null) => {
     try {
-      setMutes(await api.muteMailSender(who, days));
+      setMutes(await (kind === "subject" ? api.muteMailSubject(who, days) : api.muteMailSender(who, days)));
       const span = days === null ? "until you unmute" : `for ${days} day${days === 1 ? "" : "s"}`;
-      toast.success(`${who} muted ${span} - its mail is under Muted. Orders, sales and payouts still show.`);
+      toast.success(
+        kind === "subject"
+          ? `Mail with "${who}" in the subject muted ${span} - it is under Muted. Orders, sales and payouts still show.`
+          : `${who} muted ${span} - its mail is under Muted. Orders, sales and payouts still show.`,
+      );
       void loadFolder();
       void loadHeader().catch(() => undefined);
     } catch (e) {
       toast.error(errMsg(e));
     }
   };
-  const unmute = async (who: string) => {
+  const unmute = async (kind: MuteKind, who: string) => {
     try {
-      setMutes(await api.unmuteMailSender(who));
-      toast.success(`${who} unmuted - all of its mail is back where it was.`);
+      setMutes(await (kind === "subject" ? api.unmuteMailSubject(who) : api.unmuteMailSender(who)));
+      toast.success(
+        kind === "subject"
+          ? `"${who}" unmuted - that mail is back where it was.`
+          : `${who} unmuted - all of its mail is back where it was.`,
+      );
       void loadFolder();
       void loadHeader().catch(() => undefined);
     } catch (e) {
@@ -747,6 +909,42 @@ export default function MailIntelligence() {
   // 2.113.0: the panes reach the bottom of the window (lib/useFillHeight.ts).
   const panesRef = useRef<HTMLDivElement>(null);
   const panesHeight = useFillHeight(panesRef);
+  /* 2.115.0, marko: "ked je mail vacsi tak si vies potiahnut posuvnikom aby
+     sa zvacsila ta cast kde je mail". The edge between the list and the
+     message is a handle: dragged left, the message gets the room. Kept per
+     computer - their screens differ. */
+  const [listWidth, setListWidth] = useState(() => {
+    const stored = Number(readStorage(LIST_WIDTH_KEY));
+    return Number.isFinite(stored) && stored >= LIST_MIN ? Math.min(stored, LIST_MAX) : LIST_DEFAULT;
+  });
+  const [resizing, setResizing] = useState(false);
+  const saveListWidth = (w: number) => {
+    const width = Math.round(Math.max(LIST_MIN, Math.min(LIST_MAX, w)));
+    setListWidth(width);
+    writeStorage(LIST_WIDTH_KEY, String(width));
+  };
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const from = listWidth;
+    // The message keeps room enough to read.
+    const room = (panesRef.current?.clientWidth ?? 1200) - 200 - 32 - READER_MIN;
+    const max = Math.max(LIST_MIN, Math.min(LIST_MAX, room));
+    let last = from;
+    setResizing(true);
+    const move = (ev: PointerEvent) => {
+      last = Math.max(LIST_MIN, Math.min(max, from + ev.clientX - startX));
+      setListWidth(last);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setResizing(false);
+      saveListWidth(last);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
   useRemeasure([loading, status?.connected]);
 
   if (loading) {
@@ -790,15 +988,20 @@ export default function MailIntelligence() {
      lane it is on and how much each still has to download. */
   const progress = lastRun?.progress ?? status.progress;
   const failed = lastRun?.status === "failed";
-  const headline = syncHeadline({
-    progress,
-    paused: status.paused,
-    failed,
-    rateLimited: !!lastRun?.rateLimited,
-    intervalSeconds: status.syncIntervalSeconds,
-  });
-  const lanes = laneViews(progress, fmt);
-  const busy = nudged || isReading(progress, status.paused, failed);
+  // 2.115.0: while the other computer reads Gmail for this one, this one's
+  // lanes stand still - the line says where the mail comes from instead.
+  const following = share.role === "follower";
+  const headline = following
+    ? shareLine(share, fmt)
+    : syncHeadline({
+        progress,
+        paused: status.paused,
+        failed,
+        rateLimited: !!lastRun?.rateLimited,
+        intervalSeconds: status.syncIntervalSeconds,
+      });
+  const lanes = following ? [] : laneViews(progress, fmt);
+  const busy = nudged || (!following && isReading(progress, status.paused, failed));
   const dropOn = (key: string) => (ids: number[]) => void (key === "trash" ? bulk("trash", ids) : moveIds(ids, key));
 
   return (
@@ -813,7 +1016,12 @@ export default function MailIntelligence() {
         actions={
           <>
             <div className="w-56">
-              <Input placeholder="Search this folder" value={search} onChange={(e) => setSearch(e.target.value)} />
+              <Input
+                id="mail-search"
+                placeholder="Search this folder"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
             </div>
             {/* Sync asks the one reader (commands/mail_sync.rs, started by
                 Layout.tsx) to go now; when reading is paused, the same
@@ -822,9 +1030,18 @@ export default function MailIntelligence() {
               variant="secondary"
               disabled={nudged}
               onClick={async () => {
+                // 2.115.0: the other computer reads Gmail for this one - it
+                // is the one asked to look now.
+                if (following && !status.paused && askReaderToSync()) {
+                  toast.success(`Your ${share.peer ?? "other computer"} checks Gmail now`);
+                  return;
+                }
                 setNudged(true);
                 try {
-                  if (status.paused) setStatus(await api.setMailPaused(false));
+                  if (status.paused) {
+                    setStatus(await api.setMailPaused(false));
+                    nudgeMailShare();
+                  }
                   requestMailSync();
                 } catch (e) {
                   setNudged(false);
@@ -853,8 +1070,18 @@ export default function MailIntelligence() {
             <span className={`tabular-nums ${LANE_TONE[l.tone]}`}>{l.text}</span>
           </span>
         ))}
+        {share.role === "reader" && share.peer && (
+          <span className="whitespace-nowrap text-slate-500 dark:text-slate-400" title={shareLine(share, fmt)}>
+            Sends to your {share.peer}
+            {share.sent > 0 ? ` · ${fmt(share.sent)}` : ""}
+          </span>
+        )}
         <span className="ml-auto whitespace-nowrap text-slate-400 dark:text-slate-500">
-          {lastSyncText(progress.lastSuccessAt ?? status.lastSyncAt, new Date())}
+          {/* While following: when mail last came from the other computer. */}
+          {lastSyncText(
+            following ? lastRun?.syncedAt ?? progress.lastSuccessAt : progress.lastSuccessAt ?? status.lastSyncAt,
+            new Date(),
+          )}
         </span>
       </Card>
 
@@ -989,7 +1216,7 @@ export default function MailIntelligence() {
           <MailSettingsPane status={status} onStatus={setStatus} localFolders={localFolders} labels={userLabels} />
         ) : (
           <>
-            <Card className="flex w-[360px] shrink-0 flex-col overflow-hidden p-0">
+            <Card className="flex shrink flex-col overflow-hidden p-0" style={{ width: listWidth, minWidth: LIST_MIN }}>
               {/* 2.114.0: "80% z toho su shits" - sorted on a click, moved only
                   when marko says so (components/PromoCleanup.tsx). */}
               {folder === "promotions" && !query && (
@@ -1100,19 +1327,25 @@ export default function MailIntelligence() {
               {folder === "muted" && mutes.length > 0 && (
                 <div className="border-b border-slate-200 px-3 py-2 dark:border-slate-800">
                   <p className="section-title mb-1 flex items-center gap-1.5">
-                    <IconBellOff className="h-3.5 w-3.5" /> Muted senders
+                    <IconBellOff className="h-3.5 w-3.5" /> Muted
                   </p>
                   <ul className="space-y-0.5">
                     {mutes.map((m) => (
-                      <li key={m.who} className="flex items-center gap-2 text-[11.5px]">
+                      <li key={`${muteKind(m)}:${m.who}`} className="flex items-center gap-2 text-[11.5px]">
                         <span className="min-w-0 flex-1 truncate" title={m.who}>
-                          <span className="font-mono text-slate-700 dark:text-slate-200">{m.who}</span>{" "}
+                          {muteKind(m) === "subject" ? (
+                            <span className="text-slate-700 dark:text-slate-200">
+                              Subject &ldquo;{m.who}&rdquo;
+                            </span>
+                          ) : (
+                            <span className="font-mono text-slate-700 dark:text-slate-200">{m.who}</span>
+                          )}{" "}
                           <span className="text-slate-400 dark:text-slate-500">{muteState(m)}</span>
                         </span>
                         <button
                           type="button"
                           className="shrink-0 text-[11px] font-medium text-brand-600 hover:underline dark:text-brand-400"
-                          onClick={() => void unmute(m.who)}
+                          onClick={() => void unmute(muteKind(m), m.who)}
                         >
                           Unmute
                         </button>
@@ -1154,6 +1387,9 @@ export default function MailIntelligence() {
                       active={openId === m.id}
                       checked={selected.has(m.id)}
                       movedName={m.movedTo && m.movedTo !== folder ? placeName(m.movedTo) : null}
+                      preview={status.listPreview ?? true}
+                      tags={status.listTags ?? true}
+                      compact={status.listCompact ?? false}
                       onOpen={onOpen}
                       onToggle={onToggle}
                       onDragStart={onDragStart}
@@ -1177,7 +1413,38 @@ export default function MailIntelligence() {
               )}
             </Card>
 
-            <Card className="flex min-w-0 flex-1 flex-col overflow-hidden p-0">
+            {/* The handle: dragged, or the arrow keys once it has focus;
+                a double click puts it back. It sits in the gap, so the gap
+                looks as before. */}
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Width of the message list"
+              aria-valuenow={listWidth}
+              aria-valuemin={LIST_MIN}
+              aria-valuemax={LIST_MAX}
+              tabIndex={0}
+              title="Drag to make the message wider or narrower - double-click to put it back"
+              onPointerDown={startResize}
+              onDoubleClick={() => saveListWidth(LIST_DEFAULT)}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  saveListWidth(listWidth + (e.key === "ArrowLeft" ? -40 : 40));
+                }
+              }}
+              className="group -mx-3 flex w-2 shrink-0 cursor-col-resize items-center justify-center rounded focus:outline-none"
+            >
+              <span
+                className={`h-12 w-1 rounded-full transition ${
+                  resizing ? "bg-brand-500" : "bg-slate-300 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 dark:bg-slate-600"
+                }`}
+              />
+            </div>
+            {/* While dragging, the message's own frame must not catch the mouse. */}
+            {resizing && <div className="fixed inset-0 z-50 cursor-col-resize" />}
+            <Card className="flex min-w-0 flex-1 flex-col overflow-hidden p-0" style={{ minWidth: READER_MIN }}>
               {open ? (
                 <MailReader
                   message={open}
@@ -1187,8 +1454,8 @@ export default function MailIntelligence() {
                   mutes={mutes}
                   onMove={(ids, t) => void moveIds(ids, t)}
                   onTrash={(ids, restore) => void bulk(restore ? "restore" : "trash", ids)}
-                  onMute={(who, days) => void mute(who, days)}
-                  onUnmute={(who) => void unmute(who)}
+                  onMute={(kind, who, days) => void mute(kind, who, days)}
+                  onUnmute={(kind, who) => void unmute(kind, who)}
                   onChanged={onReaderChanged}
                 />
               ) : (
@@ -1197,6 +1464,11 @@ export default function MailIntelligence() {
                   <p className="text-[11px] text-slate-400 dark:text-slate-500">
                     Drag messages onto a folder on the left to move them.
                   </p>
+                  {status.shortcuts && (
+                    <p className="text-[11px] text-slate-400 dark:text-slate-500">
+                      Or press <kbd className="font-sans">↓</kbd> - the arrow keys go through the list.
+                    </p>
+                  )}
                 </div>
               )}
             </Card>

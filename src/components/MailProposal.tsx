@@ -24,6 +24,7 @@ import type {
 } from "../lib/types";
 import { IconAlertTriangle, IconCheck } from "./icons";
 import { Button, CHECKBOX_CLASS, ConfirmDialog, Field, Input, Modal, ModalFooter, Select, Spinner } from "./ui";
+import { quietly } from "../lib/diagnostics";
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN", "CAD", "AUD"];
 
@@ -252,8 +253,8 @@ function MailCreateModal({
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (proposal.kind !== "finance") api.listEvents().then(setEvents).catch(() => {});
-    api.listPlatforms().then(setPlatforms).catch(() => {});
+    if (proposal.kind !== "finance") api.listEvents().then(setEvents).catch(quietly("MailProposal: listEvents"));
+    api.listPlatforms().then(setPlatforms).catch(quietly("MailProposal: listPlatforms"));
   }, [proposal.kind]);
 
   useEffect(() => {

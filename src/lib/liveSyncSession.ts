@@ -65,6 +65,7 @@ import type {
   LiveSyncStatus,
   LiveSyncTake,
 } from "./types";
+import { quietly } from "./diagnostics";
 
 export type LiveSyncView = {
   phase: LivePhase;
@@ -247,7 +248,7 @@ export class LiveSyncSession {
         this.setView({ phase: "off", detail: null });
         // Was on once: the other computers must stop treating Drive as only
         // a backup while this one is not sending.
-        if (s.seededAt) void announceDevice(this.deps.db, this.uid, s.deviceId, false, this.deps.platform).catch(() => {});
+        if (s.seededAt) void announceDevice(this.deps.db, this.uid, s.deviceId, false, this.deps.platform).catch(quietly("liveSyncSession: announceDevice"));
         return;
       }
       this.cursor = s.cursorS !== null ? { seconds: s.cursorS, nanoseconds: s.cursorNs ?? 0 } : null;
@@ -260,7 +261,7 @@ export class LiveSyncSession {
       this.setView({ phase: this.deps.online() ? "live" : "offline", detail: null });
       this.schedulePush(0);
       // Here, and live - see `devicesAllLive`.
-      void announceDevice(this.deps.db, this.uid, s.deviceId, true, this.deps.platform).catch(() => {});
+      void announceDevice(this.deps.db, this.uid, s.deviceId, true, this.deps.platform).catch(quietly("liveSyncSession: announceDevice"));
     } catch (e) {
       this.started = true;
       this.fail(e, () => this.restart());
@@ -569,7 +570,7 @@ export class LiveSyncSession {
     const trouble = classify(errorCode(e));
     const wait = retryDelay(trouble, this.attempt);
     this.setView({ phase: trouble, detail: errorText(e) });
-    void this.deps.backend.liveSyncReport(errorText(e)).catch(() => {});
+    void this.deps.backend.liveSyncReport(errorText(e)).catch(quietly("live sync: report a problem"));
     if (retry) {
       if (this.retryTimer) clearTimeout(this.retryTimer);
       this.retryTimer = setTimeout(() => {

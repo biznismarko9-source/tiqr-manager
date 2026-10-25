@@ -18,6 +18,7 @@ import AiImportPanel from "../components/AiImportPanel";
 import { CURRENCIES } from "./Orders";
 import { isIsoDate, matchByName } from "../lib/aiImport";
 import { useToast } from "../lib/toast";
+import { quietly } from "../lib/diagnostics";
 
 /**
  * New Sale, as ROWS inside a modal over the Sales list.
@@ -127,7 +128,7 @@ export default function SaleRowsModal({
 
   useEffect(() => {
     if (!open) return;
-    api.listPlatforms().then(setPlatforms).catch(() => {});
+    api.listPlatforms().then(setPlatforms).catch(quietly("SaleRowsModal: listPlatforms"));
   }, [open]);
 
   useEffect(() => {
@@ -191,7 +192,7 @@ export default function SaleRowsModal({
           }
           setOrderOptions(top);
         })
-        .catch(() => {});
+        .catch(quietly("New sale: list orders"));
     }, 200);
     return () => clearTimeout(t);
   }, [open, orderQuery, initialOrderId]);
