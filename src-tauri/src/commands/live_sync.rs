@@ -158,6 +158,21 @@ pub(crate) fn install_triggers(conn: &Connection) -> rusqlite::Result<()> {
     if !ready {
         return Ok(());
     }
+    // 2.118.0: all of them in one write. Nearly two hundred statements were
+    // each a write of its own - on a phone each a trip to the browser's
+    // storage, seconds at every start - and a failure half way left some
+    // tables without theirs.
+    conn.execute_batch("SAVEPOINT live_sync_triggers")?;
+    match rebuild_triggers(conn) {
+        Ok(()) => conn.execute_batch("RELEASE live_sync_triggers"),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK TO live_sync_triggers; RELEASE live_sync_triggers");
+            Err(e)
+        }
+    }
+}
+
+fn rebuild_triggers(conn: &Connection) -> rusqlite::Result<()> {
     let on = "(SELECT seeded_at IS NOT NULL AND applying = 0 FROM sync_control WHERE id = 1)";
     let on_even_applying = "(SELECT seeded_at IS NOT NULL FROM sync_control WHERE id = 1)";
     let stamp = format!("UPDATE sync_control SET hlc = MAX({NOW_MS_SQL}, hlc + 1) WHERE id = 1;");

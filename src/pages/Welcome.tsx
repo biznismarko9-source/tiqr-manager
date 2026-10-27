@@ -4,7 +4,7 @@ import { Button, Card, Field, Input, SEGMENTED_TRACK, segmentedItemClass, Spinne
 import { IconGoogle } from "../components/icons";
 import { api, errMsg } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { IS_WEB } from "../lib/platform";
+import { IS_PHONE, IS_WEB } from "../lib/platform";
 import { firebaseAuthErrorMessage } from "../lib/firebaseErrors";
 import { useToast } from "../lib/toast";
 import logo from "../assets/logo.png";
@@ -224,8 +224,10 @@ export default function Welcome() {
                   other two-way switch in the app rather than this screen's
                   own brand-fill variant. */}
               {/* 2.117.0: the web serves the account TIQR has open on the
-                  server - a new account is made in TIQR on a computer. */}
-              {!IS_WEB && (
+                  server - a new account is made in TIQR on a computer.
+                  2.118.0: TIQR on a phone is TIQR itself - an account can be
+                  made there, and waits for approval as on a computer. */}
+              {(!IS_WEB || IS_PHONE) && (
                 <div className={`${SEGMENTED_TRACK} mb-4 w-full flex-nowrap`}>
                   <button
                     type="button"
@@ -331,7 +333,9 @@ export default function Welcome() {
         </Card>
 
         <p className="mt-4 text-center text-[11px] text-slate-500 dark:text-slate-400">
-          {IS_WEB ? (
+          {IS_PHONE ? (
+            <>Your data stays on this phone and syncs with your other devices</>
+          ) : IS_WEB ? (
             <>Your data stays in TIQR on your own server</>
           ) : (
             <>Local-first &middot; your data stays on this device</>

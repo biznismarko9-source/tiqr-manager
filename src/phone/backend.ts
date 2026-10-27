@@ -49,6 +49,7 @@ function open(): Worker {
         failAll(STOPPED);
         break;
       case "ready":
+        console.info("TIQR opened on this phone (ms):", m.took);
         break;
     }
   };

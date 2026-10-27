@@ -7,8 +7,8 @@ export type Call = { id: number; cmd: string; args: Record<string, unknown> };
 
 /** Worker to page. */
 export type Message =
-  /** TIQR is open and answers commands. */
-  | { kind: "ready" }
+  /** TIQR is open and answers commands - and how long each step took (ms). */
+  | { kind: "ready"; took: { wait: number; load: number; open: number } }
   /** TIQR could not open (the browser keeps no data for this site, ...). */
   | { kind: "failed"; message: string }
   /** A command's answer - a value, or the bytes of a file. */

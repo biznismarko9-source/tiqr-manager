@@ -41,3 +41,4 @@ dist-web
 # Rust built for the browser (src/phone/pkg) and the site itself.
 src/phone/pkg
 dist-phone
+dist-phone-emulators

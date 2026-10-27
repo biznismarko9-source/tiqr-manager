@@ -25,22 +25,64 @@ const parse = (text: unknown): unknown => {
 
 let stopped = false;
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** What the page says when another tab has TIQR open. */
+const OPEN_ELSEWHERE = "TIQR is open in another tab or window on this phone. Close it there, then reload this page.";
+
+/** The database's storage opens in one place at a time, so TIQR holds this
+ *  for as long as this worker lives. After a reload the page that went away
+ *  may still hold it for a moment - it is waited for; another open tab
+ *  holds it for good, and is named. */
+function holdTheDatabase(): Promise<boolean> {
+  return new Promise((resolve) => {
+    navigator.locks
+      .request("tiqr-database", { signal: AbortSignal.timeout(8_000) }, () => {
+        resolve(true);
+        return new Promise<void>(() => undefined);
+      })
+      .catch(() => resolve(false));
+  });
+}
+
+/** Whether `start` failed only because the storage was still held - by the
+ *  page a reload just closed, which lets go a moment later. */
+const stillHeld = (e: unknown) => /NoModificationAllowedError|Access Handles cannot be created/i.test(String(e));
+
+const emit = (event: string, payload: string) => {
+  if (event === "tiqr-phone-stopped") {
+    stopped = true;
+    send({ kind: "stopped", detail: payload });
+    return;
+  }
+  send({ kind: "event", event, payload: parse(payload) });
+};
+
 /** TIQR opens once; commands that come before wait for it. */
 const opened: Promise<boolean> = (async () => {
   try {
+    const t0 = performance.now();
+    if (!(await holdTheDatabase())) {
+      send({ kind: "failed", message: OPEN_ELSEWHERE });
+      return false;
+    }
+    const t1 = performance.now();
     await init({ module_or_path: wasmUrl });
-    await start((event: string, payload: string) => {
-      if (event === "tiqr-phone-stopped") {
-        stopped = true;
-        send({ kind: "stopped", detail: payload });
-        return;
+    const t2 = performance.now();
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await start(emit);
+        break;
+      } catch (e) {
+        if (attempt >= 20 || !stillHeld(e)) throw e;
+        await sleep(250);
       }
-      send({ kind: "event", event, payload: parse(payload) });
-    });
-    send({ kind: "ready" });
+    }
+    const t3 = performance.now();
+    send({ kind: "ready", took: { wait: Math.round(t1 - t0), load: Math.round(t2 - t1), open: Math.round(t3 - t2) } });
     return true;
   } catch (e) {
-    send({ kind: "failed", message: e instanceof Error ? e.message : String(e) });
+    send({ kind: "failed", message: stillHeld(e) ? OPEN_ELSEWHERE : e instanceof Error ? e.message : String(e) });
     return false;
   }
 })();

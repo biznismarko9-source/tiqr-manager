@@ -1,7 +1,13 @@
 import { initializeApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { connectAuthEmulator, getAuth } from "firebase/auth";
+import { connectFirestoreEmulator, getFirestore } from "firebase/firestore";
 import { IS_WEB } from "./platform";
+
+// 2.118.0: a test build (`VITE_TIQR_EMULATORS=1`) signs in and syncs against
+// the Firebase emulators on the computer it is tested on - a made-up project,
+// never the real one (scripts/phone-emulator-check.mjs). Nothing that ships
+// is built with it.
+const EMULATORS = import.meta.env.VITE_TIQR_EMULATORS === "1";
 
 // 2.117.0: TIQR in a browser at its own https address (app.tiqr.site) signs
 // in with Google on that same address - TIQR on the server passes Firebase's
@@ -30,7 +36,7 @@ export const SIGN_IN_ON_THIS_SITE = IS_WEB && window.location.protocol === "http
 const firebaseConfig = {
   apiKey: "AIzaSyBZZKkmIW4EOVYMp6pSpmVFbEY7a98d5OA",
   authDomain: SIGN_IN_ON_THIS_SITE ? window.location.host : "tiqr-manager-b890a.firebaseapp.com",
-  projectId: "tiqr-manager-b890a",
+  projectId: EMULATORS ? "demo-tiqr" : "tiqr-manager-b890a",
   storageBucket: "tiqr-manager-b890a.firebasestorage.app",
   messagingSenderId: "251875496438",
   appId: "1:251875496438:web:d1a2ad7112b4f76fe5b7d7",
@@ -58,6 +64,11 @@ export const auth = getAuth(app);
 // users/{uid}/rows|parts|settings|devices, each account its own, with the
 // rules for it in the same file.
 export const db = getFirestore(app);
+
+if (EMULATORS) {
+  connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
+  connectFirestoreEmulator(db, "127.0.0.1", 8085);
+}
 
 // 2.5.2: "Forgot password?" (see lib/auth.tsx's requestPasswordReset) - the
 // short version of a much longer story, told in full here because every

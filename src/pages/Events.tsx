@@ -199,10 +199,14 @@ export default function Events() {
      see. `stats.currency === null` is the backend's own flag for "this
      event's money is spread across currencies" - the same one
      formatMoneyOrMixed reads per cell. */
+  // 2.118.0: an event with no tickets yet has no currency at all (the
+  // backend's null) - nothing to total, not money in several currencies.
   const mixedCurrencyCount = useMemo(
-    () => visibleEvents.filter((ev) => ev.stats.currency === null).length,
+    () => visibleEvents.filter((ev) => ev.stats.currency === null && ev.stats.purchasedTickets > 0).length,
     [visibleEvents],
   );
+  const eventMoney = (ev: (typeof visibleEvents)[number], cents: number) =>
+    ev.stats.purchasedTickets === 0 ? "-" : formatMoneyOrMixed(cents, ev.stats.currency);
 
   const exitSelectionMode = () => {
     setSelectionMode(false);
@@ -640,12 +644,12 @@ export default function Events() {
                     <Badge tone={ev.status}>{ev.status}</Badge>
                   </td>
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} num text-right whitespace-nowrap`}>{ev.stats.purchasedTickets}</td>
-                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} num text-right whitespace-nowrap`}>{formatMoneyOrMixed(ev.stats.totalCostCents, ev.stats.currency)}</td>
-                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} num text-right whitespace-nowrap`}>{formatMoneyOrMixed(ev.stats.revenueCents, ev.stats.currency)}</td>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} num text-right whitespace-nowrap`}>{eventMoney(ev, ev.stats.totalCostCents)}</td>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} num text-right whitespace-nowrap`}>{eventMoney(ev, ev.stats.revenueCents)}</td>
                   <td
                     className={`${isNarrow ? "td-c-narrow" : "td-c"} num text-right whitespace-nowrap font-medium ${ev.stats.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : ev.stats.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
                   >
-                    {formatMoneyOrMixed(ev.stats.profitCents, ev.stats.currency)}
+                    {eventMoney(ev, ev.stats.profitCents)}
                   </td>
                 </tr>
               ))}

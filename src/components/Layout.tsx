@@ -255,6 +255,12 @@ export default function Layout() {
     api
       .liveSyncStatus()
       .then((s) => {
+        // 2.118.0: a phone has no data but what live sync brings, so there
+        // it is simply on - nothing to offer or decide.
+        if (IS_PHONE) {
+          if (!s.enabled) setLiveSyncEnabled(uid, true).catch(quietly("Layout: live sync on for this phone"));
+          return;
+        }
         setLiveOffer(!s.decided);
         setLivePaused(s.pausedAfterRestore);
       })
