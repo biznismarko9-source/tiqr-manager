@@ -66,6 +66,7 @@ import {
 import { useToast } from "../lib/toast";
 import { useFillHeight, useRemeasure } from "../lib/useFillHeight";
 import { usePhone } from "../lib/usePhone";
+import { IS_PHONE } from "../lib/platform";
 
 /** Folders this app defines itself, above Gmail's own. */
 type Builtin =
@@ -975,6 +976,21 @@ export default function MailIntelligence() {
             <Spinner className="h-4 w-4" /> Loading...
           </div>
         </Card>
+      </div>
+    );
+  }
+
+  // 2.118.0: Gmail is connected and read by TIQR on the computer; mail on a
+  // phone comes in a later version.
+  if (!status?.connected && IS_PHONE) {
+    return (
+      <div>
+        <PageHeader title="Mail" subtitle="Your inbox, with what matters pulled to the front." />
+        <EmptyState
+          icon={<IconMail className="h-5 w-5" />}
+          title="Mail is on the computer for now"
+          description="TIQR on your computer reads Gmail and turns sale, payout and refund mail into records - they reach this phone through live sync. Reading the mail itself here comes in a later version."
+        />
       </div>
     );
   }
