@@ -161,6 +161,39 @@ from old reports.
 
 ## Documented limitations (not bugs, but worth remembering)
 
+- **Web access lives in the server's TIQR window** (2.117.0). Closed, not
+  signed in, or the server rebooted without signing in again: the tunnel
+  answers 502 and the phone says "TIQR on the server cannot be reached" (or
+  "not signed in yet"). The release guide (`WEB-A-MOBIL.txt`) sets up the
+  Startup folder and Autologon for reboots; TIQR itself has no autostart.
+
+- **A change made on the phone reaches the other computers within about a
+  minute, not seconds** (2.117.0). The phone writes straight into the
+  server's database, but the server's live sync loop runs on the window's
+  timers, and WebView2 slows the timers of a window nobody looks at (Tauri's
+  `backgroundThrottling` is not supported on Windows). What the other
+  computers send arrives at the server as fast as before (Firestore's
+  listener is not a timer).
+
+- **Not verifiable in the build environment, first checked on the real
+  server** (2.117.0): a real Firebase ID token through Wry on Windows (the
+  dispatch is covered by a MockRuntime end-to-end test), Firebase's real
+  `/__/auth/` pages through the pass-through (covered against a stand-in),
+  the redirect sign-in inside an iPhone home-screen app, and Cloudflare
+  Access inside one. If the Google sign-in fails on the phone, email and
+  password still work; if it fails only in the home-screen app, Safari
+  itself is the way.
+
+- **Google sign-in on the web needs two console settings** (2.117.0):
+  `app.tiqr.site` among Firebase's authorized domains, and
+  `https://app.tiqr.site/__/auth/handler` among the OAuth web client's
+  redirect URIs. Without them Google answers `redirect_uri_mismatch`.
+
+- **On the web, files and windows are refused on purpose** (2.117.0): CSV
+  export/import, backup/restore, attachments, the diagnostic report file,
+  the price checker, connecting Gmail, Google Sheets sign-in, and switching
+  Web access itself. Each says why, in a sentence.
+
 - **Mail is per computer, shared while both run (2.110.0; 2.115.0).** Each
   computer keeps its own mail file. Alone, it reads Gmail itself (since
   2.114.3 at full pace even minimised). While both run with "Two computers,

@@ -23,11 +23,14 @@ sync between marko's computers also goes through Firestore, under the
 signed-in account's own `users/{uid}` (opt-in per computer). Since 2.115.0,
 while both computers run, one reads Gmail and forwards what it stored to
 the other through the same space (`users/{uid}/mail`), each batch deleted
-once stored.
+once stored. Since 2.117.0, a TIQR that stays on (marko's Windows server)
+can also serve its screens to a browser - Web access, off unless switched on
+there, reached as `https://app.tiqr.site` through Cloudflare Tunnel; still
+no server of TIQR's own, the server is just one more computer of marko's.
 
 ## Version
 
-**2.116.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.117.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, and - in the release zip, no longer in the
 repository since 2.113.0 (see `RELEASE.md`) - `release.ps1`'s `$Version` and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
@@ -2652,6 +2655,75 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.117.0 - TIQR in a browser and on a phone** (report:
+`history/REDESIGN-2.117.0-REPORT.md`; marko: "tak skor by som siel do webu",
+the domain is `tiqr.site`). Includes the unreleased 2.116.1.
+* `src-tauri/src/web_access.rs`: an axum server on **127.0.0.1 only**
+  (default port 8787), off unless `<app_data_dir>/web-access.json` says on
+  (Settings -> Integrations -> Web access; per computer, never synced). Routes:
+  `/api/health`; `/api/invoke` (`{cmd,args}` -> the main window's own
+  `Webview::on_message`, so every one of the app's commands answers exactly
+  as in the window: 200 JSON / octet-stream, 422 `{"error": ...}`);
+  `/api/events` (SSE of the window's `mail-sync` events); `/__/auth/*`,
+  `/__/firebase/*` (Firebase's sign-in pages passed through, see below); the
+  web screens (`WEB_ASSETS`, embedded by build.rs from `dist-web`, SPA
+  fallback). Every `/api` request needs `Authorization: Bearer <Firebase ID
+  token>`: RS256 with Google's published keys (cached by Cache-Control, an
+  unknown kid fetched at most once a minute), aud/iss of tiqr-manager-b890a,
+  60 s leeway, and `sub` must be the account whose database is open
+  (`note_signed_in`, called by `switch_active_database`). 401 no/bad token,
+  503 nobody signed in on the server, 403 another account or a refused
+  command. `refusal` (BLOCKED): files (backup/restore/CSV/attachments/
+  diagnostics), windows (price scanner, Google/Gmail sign-ins), the window's
+  own loops (live sync take/ack/apply..., mail share, cloud_sync auto/pull/
+  restore), `set_web_access_options`, every `plugin:*`, and
+  `switch_active_database` for another uid. Every page answer gets nosniff,
+  `X-Frame-Options: DENY`, no-referrer and the CSP (`protect`).
+* **Google sign-in on the site's own address**: Firebase's `/__/auth/` and
+  `/__/firebase/` are fetched from `tiqr-manager-b890a.firebaseapp.com` and
+  handed over (GET/POST, 64 KB, 20 s, no redirects followed). Out go only
+  Accept, Accept-Language, Content-Type, User-Agent and the two conditional
+  headers - never cookies (Cloudflare Access's would leak) - and back come
+  only content/caching headers and Location, never Set-Cookie, and not
+  `protect`'s headers (TIQR's page frames Firebase's iframe). The web build
+  sets `authDomain` to the page's own host on https
+  (`firebase.ts::SIGN_IN_ON_THIS_SITE`) and signs in by redirect
+  (`auth.tsx`), finishing with `getRedirectResult` only after a sign-in left
+  from that tab (sessionStorage `tiqr.googleSignInPending`). Needs, once, in
+  the consoles: Firebase authorized domain `app.tiqr.site`, and the redirect
+  URI `https://app.tiqr.site/__/auth/handler` on the OAuth web client. Over
+  plain http (127.0.0.1) it is the popup with firebaseapp.com as before.
+* **Web build**: `npm run build:web` = `vite build --mode web` -> `dist-web`
+  (gitignored; tauri.conf.json's beforeBuildCommand builds both). Aliases
+  swap `@tauri-apps/api/core|event|window` and the dialog, opener, process,
+  updater and deep-link plugins for `src/web/*`; `__TIQR_WEB__` ->
+  `lib/platform.ts::IS_WEB`. `web/core.ts` posts to `/api/invoke` with the
+  current ID token (one retry with a forced refresh on 401); `web/event.ts`
+  reads `/api/events` with fetch streaming, reconnecting 1 s -> 30 s.
+  `IS_WEB` turns off, in Layout: live sync, mail share, the mail reader's
+  start/hold, the update check, the Drive tick, notifications, the price
+  scanner's listener and the close handler - the server's window does those.
+  Home-screen icon + manifest come from the `homeScreen()` vite plugin.
+* **Phone layout** (below Tailwind `md`, 768 px - the desktop window is never
+  that narrow, 1080 px minimum): the rail hides and `PhoneNav` (Layout.tsx)
+  is a bottom tab bar (Dashboard, Events, Inventory, Sales, More sheet with
+  the rest, Settings, theme, Log out), marked `data-phone-nav` so
+  `useFillHeight` stops panes above it. `index.css`'s phone block: `.toolbar`
+  / `.filter-bar` rows scroll sideways (position: relative for their sr-only
+  labels), `.page-actions > .flex` wraps, `table-fixed` list tables keep a
+  848 px minimum and scroll inside `.table-shell`, `.figs` is a two-column
+  grid. `lib/usePhone.ts` drives one-pane Mail (folder `<Select>`, the open
+  message as a full-screen portal at z-[45] with a back bar) and Notes (list,
+  then the note with a back bar; a note opens when tapped, not on load).
+  MailSettingsPane's section list is a sideways row. Toasts and the sync
+  pill sit above the tab bar.
+* Verified here: the real app (xvfb) serving 127.0.0.1:8787, 401/503
+  answers, the pages and icons, Playwright on an iPhone 13 viewport for every
+  main screen (no sideways page scroll), and the Google button over a local
+  https front landing on `/__/auth/handler` of the same host. Not verifiable
+  here: a real Firebase token through Wry on Windows, Firebase's real pages
+  through the pass-through, and an iPhone - see KNOWN_BUGS.
 
 **2.116.1 - the event pictures removed again** (report:
 `history/REDESIGN-2.116.1-REPORT.md`; marko: "tie fotky odstran kompletne",

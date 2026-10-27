@@ -21,6 +21,39 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.117.0 - Web access (src-tauri/src/web_access.rs, src/web/)
+
+- **127.0.0.1 only.** The internet reaches it through a tunnel on the same
+  computer. Never bind another address, and never make a request through
+  without a token: only `/api/health`, the web screens and Firebase's
+  sign-in pages are answered without one.
+- **A token is the open account or nothing.** `verify_token` checks RS256,
+  Google's key, aud/iss, expiry and issue time, then `sub` against
+  `note_signed_in` - set only by `switch_active_database`. A browser's
+  `switch_active_database` for another uid is refused, so a valid sign-in of
+  someone else can never open their database on the server.
+- **A command that writes a file, opens a window or runs the window's own
+  loops goes into `BLOCKED`**, with its reason. The test
+  `every_refused_command_is_a_command_this_app_has` catches a renamed one;
+  nothing catches a NEW one that should be refused - add it when adding the
+  command.
+- **The sign-in pass-through stays this narrow**: `/__/auth/` and
+  `/__/firebase/` only, Firebase's own host only, no cookies either way
+  (this address's cookies are Cloudflare Access's), a header allowlist each
+  way, and no `protect` headers on those answers (TIQR's page frames
+  Firebase's iframe, so `X-Frame-Options: DENY` there breaks sign-in).
+- **Browser tabs never run the server's loops**: live sync, mail share and
+  the mail reader start only where `IS_WEB` is false. Two tabs running them
+  beside the server's window would send every change twice and fight over
+  the mail lease.
+- **The CSP** (`web_access::CSP`) allows apis.google.com scripts and the
+  firebaseapp.com frame for Firebase Auth; a change to the sign-in needs a
+  check in a real browser, not just the tests.
+- **The phone layout is below `md` only.** The desktop window cannot get
+  that narrow (1080 px minimum), and the phone block in `index.css` (the
+  848 px table minimum, the two-column figures, the sideways rows) must stay
+  inside its media query so the desktop app does not change.
+
 ## 2.116.1 - event pictures removed
 
 - **Migration 047 stays registered in `db.rs`**, before 048. A file that
