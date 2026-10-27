@@ -58,6 +58,40 @@ const emit = (event: string, payload: string) => {
   send({ kind: "event", event, payload: parse(payload) });
 };
 
+/** Headers a browser sets by itself, and refuses (noisily) to be given. */
+const BROWSERS_OWN = new Set(["host", "user-agent", "content-length", "connection", "accept-encoding", "cookie", "origin", "referer"]);
+
+/** A request to the internet from TIQR's Rust (exchange rates, ntfy), the
+ *  way the computer's app makes it: the answer comes before this returns. A
+ *  worker may wait like that; the screen does not wait with it. A service
+ *  that does not let a web page call it (CORS) fails here as "could not
+ *  connect". Redirects are always followed - TIQR refuses, on the phone,
+ *  the one kind of request that must not follow them (phone.rs). */
+function http(method: string, url: string, headers: string, body: Uint8Array | undefined, timeoutMs: number) {
+  const xhr = new XMLHttpRequest();
+  xhr.open(method, url, false);
+  xhr.responseType = "arraybuffer";
+  if (timeoutMs > 0) xhr.timeout = timeoutMs;
+  for (const [name, value] of JSON.parse(headers) as [string, string][]) {
+    if (!BROWSERS_OWN.has(name.toLowerCase())) xhr.setRequestHeader(name, value);
+  }
+  // Anthropic answers a web page only when it says it knows it is one: the
+  // key is this person's own, typed into this phone.
+  if (new URL(url).host === "api.anthropic.com") xhr.setRequestHeader("anthropic-dangerous-direct-browser-access", "true");
+  try {
+    xhr.send(body ? new Uint8Array(body) : null);
+  } catch (e) {
+    throw e instanceof DOMException && e.name === "TimeoutError" ? "operation timed out" : "could not connect";
+  }
+  if (xhr.status === 0) throw "could not connect";
+  return {
+    status: xhr.status,
+    headers: xhr.getAllResponseHeaders(),
+    body: new Uint8Array((xhr.response as ArrayBuffer | null) ?? new ArrayBuffer(0)),
+    url: xhr.responseURL || url,
+  };
+}
+
 /** TIQR opens once; commands that come before wait for it. */
 const opened: Promise<boolean> = (async () => {
   try {
@@ -71,7 +105,7 @@ const opened: Promise<boolean> = (async () => {
     const t2 = performance.now();
     for (let attempt = 1; ; attempt++) {
       try {
-        await start(emit);
+        await start(emit, http);
         break;
       } catch (e) {
         if (attempt >= 20 || !stillHeld(e)) throw e;

@@ -5,7 +5,8 @@
 //! with JSON arguments, as it calls Tauri on a computer, and `invoke` finds
 //! the same function the computer runs, from the same list
 //! (command_list.rs). An event a command sends goes back to the page through
-//! the function `start` was given.
+//! the function `start` was given, and a request to the internet (exchange
+//! rates, ntfy) through the other one (`http`, the worker's own).
 //!
 //! The database is SQLite in the browser's own storage for this site (OPFS,
 //! through `sqlite_wasm_vfs::sahpool`): kept on the phone like a file on a
@@ -32,6 +33,40 @@ const STORAGE_DIRECTORY: &str = ".tiqr";
 thread_local! {
     /// The page's function for events: `(event, payload as JSON)`.
     static TO_PAGE: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
+    /// The worker's function for a request to the internet (worker.ts,
+    /// `http`): answers at once - the worker waits for it.
+    static HTTP: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
+}
+
+/// `reqwest` on the phone (shim/reqwest) sends through here.
+fn send(request: reqwest::OutgoingRequest) -> Result<reqwest::IncomingResponse, String> {
+    use js_sys::{Array, Reflect, Uint8Array};
+    let f = HTTP.with(|f| f.borrow().clone()).ok_or_else(|| reqwest::NO_TRANSPORT.to_string())?;
+    let headers = serde_json::to_string(&request.headers).map_err(|e| e.to_string())?;
+    let body = match &request.body {
+        Some(b) => Uint8Array::from(b.as_slice()).into(),
+        None => JsValue::UNDEFINED,
+    };
+    let args = Array::of5(
+        &JsValue::from_str(&request.method),
+        &JsValue::from_str(&request.url),
+        &JsValue::from_str(&headers),
+        &body,
+        &JsValue::from_f64(request.timeout_ms.unwrap_or(0) as f64),
+    );
+    let answer = f.apply(&JsValue::NULL, &args).map_err(|e| e.as_string().unwrap_or_else(|| "could not connect".to_string()))?;
+    let field = |name: &str| Reflect::get(&answer, &JsValue::from_str(name)).unwrap_or(JsValue::UNDEFINED);
+    let status = field("status").as_f64().unwrap_or(0.0) as u16;
+    // `getAllResponseHeaders()`: one "name: value" per line.
+    let headers = field("headers")
+        .as_string()
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.split_once(':').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
+        .collect();
+    let body = field("body").dyn_into::<Uint8Array>().map(|b| b.to_vec()).unwrap_or_default();
+    let url = field("url").as_string().unwrap_or(request.url);
+    Ok(reqwest::IncomingResponse { status, headers, body, url })
 }
 
 fn to_page(event: &str, payload: &str) {
@@ -52,11 +87,14 @@ fn fail(what: &str, e: impl std::fmt::Display) -> JsValue {
 }
 
 /// Opens the browser's storage and the database, as the computer's start
-/// does (lib.rs, `run`). `emit` hears every event: `(event, payload JSON)`.
+/// does (lib.rs, `run`). `emit` hears every event: `(event, payload JSON)`;
+/// `http` sends a request: `(method, url, headers JSON, body, timeout ms)`.
 #[wasm_bindgen]
-pub async fn start(emit: js_sys::Function) -> Result<(), JsValue> {
+pub async fn start(emit: js_sys::Function, http: js_sys::Function) -> Result<(), JsValue> {
     TO_PAGE.with(|f| *f.borrow_mut() = Some(emit));
+    HTTP.with(|f| *f.borrow_mut() = Some(http));
     tauri::set_emit_hook(|event, payload| to_page(event, &payload));
+    reqwest::set_transport(send);
     tauri::set_package_info("TIQR Manager", env!("CARGO_PKG_VERSION"));
     // A stop the code did not plan for leaves this worker unusable; the page
     // hears it and offers to reload instead of waiting on answers that will

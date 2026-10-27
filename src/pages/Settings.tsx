@@ -93,7 +93,7 @@ import { UpdateOverlay } from "../components/UpdateOverlay";
 import { useAuth } from "../lib/auth";
 import { firebaseAuthErrorMessage } from "../lib/firebaseErrors";
 import { quietly } from "../lib/diagnostics";
-import { IS_WEB } from "../lib/platform";
+import { IS_PHONE, IS_WEB } from "../lib/platform";
 
 // 1.8.2: Settings Home - one card per category, each a real route
 // (settings/:section, added in App.tsx) rather than a scroll-to-anchor, so
@@ -624,7 +624,8 @@ export default function Settings() {
   }, []);
 
   useEffect(() => {
-    if (sec === "data") {
+    // 2.118.0: Drive, restore points and merges are the computer's.
+    if (sec === "data" && !IS_PHONE) {
       void refreshSync();
       void refreshRestorePoints();
       void refreshMergeHistory();
@@ -1111,6 +1112,15 @@ export default function Settings() {
                   this is one screen-worth of it. Every handler below
                   (setImportOpen, doDownloadTemplate, setExportConfig and the
                   five export configs) is exactly the one it was. */}
+              {/* 2.118.0: no file to bring in or save on a phone yet. */}
+              {IS_PHONE ? (
+                <Card className="p-5">
+                  <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">CSV</h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Importing and exporting CSV files is in TIQR on the computer.
+                  </p>
+                </Card>
+              ) : (
               <Card className="p-5">
                 <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">CSV</h3>
                 <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
@@ -1158,6 +1168,7 @@ export default function Settings() {
                   ))}
                 </div>
               </Card>
+              )}
 
               {/* 2.73.0: marko's own pick. Two real problems this week were
                   only ever found by someone querying his database by hand - a
@@ -1217,6 +1228,22 @@ export default function Settings() {
               </Card>
               </SettingsGroup>
 
+              {/* 2.118.0: a phone keeps its copy level through live sync alone - the
+                  Drive backup and the restore points are the computer's. */}
+              {IS_PHONE ? (
+                <SettingsGroup title="Keeping your data safe" hint="This phone keeps its own copy of your data and stays level with your computers.">
+                  <Card className="p-5">
+                    <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Sync with your other devices</h3>
+                    <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
+                      Live sync sends what you change here to your computers within seconds, and brings their changes here.
+                      The full backup in Google Drive, and restoring from it, stay with TIQR on the computer.
+                    </p>
+                    <div className="rounded-xl bg-surface-muted px-4 py-3.5">
+                      <LiveSyncCard embedded />
+                    </div>
+                  </Card>
+                </SettingsGroup>
+              ) : (
               <SettingsGroup
                 title="Keeping your data safe"
                 hint="Copies of this database, and the one action that can replace it. Read each button before pressing it."
@@ -1749,6 +1776,7 @@ export default function Settings() {
                 )}
               </Card>
               </SettingsGroup>
+              )}
             </div>
           )}
 
@@ -1762,6 +1790,18 @@ export default function Settings() {
                   "Connected" badge, so the page read as three services. The
                   API key is genuinely a second, unrelated one. Only wrappers
                   were added; every card below is untouched. */}
+              {/* 2.118.0: the Google account and the sheets are connected on the
+                  computer, which syncs them. */}
+              {IS_PHONE ? (
+                <SettingsGroup title="Google Sheets" hint="One Google account, and the sheets it syncs with.">
+                  <Card className="p-5">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      Google Sheets sync runs in TIQR on the computer. What it brings in reaches this phone through
+                      live sync.
+                    </p>
+                  </Card>
+                </SettingsGroup>
+              ) : (
               <SettingsGroup
                 title="Google Sheets"
                 hint="One Google account, and the sheets it syncs with."
@@ -1833,6 +1873,7 @@ export default function Settings() {
                 />
               </div>
               </SettingsGroup>
+              )}
 
               {/* 2.1.6: standalone - not a Google Sheets thing at all, but
                   "integrations" is the closest existing home (connecting an
@@ -1856,10 +1897,13 @@ export default function Settings() {
               </SettingsGroup>
 
               {/* 2.117.0: this TIQR's screens in a browser - on for the
-                  computer that stays on (the server), off everywhere else. */}
-              <SettingsGroup title="Web access" hint="Optional. Use TIQR in a browser, your iPhone too, through this computer.">
-                <WebAccessCard />
-              </SettingsGroup>
+                  computer that stays on (the server), off everywhere else.
+                  2.118.0: nothing to serve from a phone. */}
+              {!IS_PHONE && (
+                <SettingsGroup title="Web access" hint="Optional. Use TIQR in a browser, your iPhone too, through this computer.">
+                  <WebAccessCard />
+                </SettingsGroup>
+              )}
 
               {/* 2.109.0: MOVED. marko: "tie nastavenia ktore si dal do
                   integrations ku mailu tak odstran a presun ich do tych
@@ -1888,7 +1932,25 @@ export default function Settings() {
             </div>
           )}
 
-          {sec === "software" && (
+          {/* 2.118.0: TIQR on a phone is the site itself - the newest version
+              comes with it each time it opens. */}
+          {sec === "software" && IS_PHONE && (
+            <Card className="p-5 lg:max-w-xl">
+              <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Software updates</h3>
+              <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+                TIQR on this phone updates itself: it opens with the newest version each time. Nothing to install.
+              </p>
+              <dl className="mt-4 space-y-1.5 border-t border-slate-100 pt-3 text-xs dark:border-slate-800">
+                <div className="flex justify-between gap-3">
+                  <dt className="text-slate-500 dark:text-slate-400">Current version</dt>
+                  <dd className="font-medium tabular-nums text-slate-800 dark:text-slate-200">
+                    {appInfo ? `v${appInfo.version}` : "-"}
+                  </dd>
+                </div>
+              </dl>
+            </Card>
+          )}
+          {sec === "software" && !IS_PHONE && (
             <Card className="p-5 lg:max-w-xl">
               <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Software updates</h3>
               <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">

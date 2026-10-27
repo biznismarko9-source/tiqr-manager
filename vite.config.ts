@@ -1,6 +1,8 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Tauri expects a fixed port and strict port usage during dev.
@@ -71,12 +73,63 @@ function homeScreen(): Plugin {
   };
 }
 
+// 2.118.0: what Cloudflare Pages needs beside the phone build's files
+// (.github/workflows/phone-site.yml): how long each may be kept, which paths
+// reach the sign-in pass-through (phone-host/functions), and the service
+// worker that opens TIQR without a connection (phone-host/sw.js), given the
+// list of every file the build wrote.
+const PHONE_HEADERS = `/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: SAMEORIGIN
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+/
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache
+/sw.js
+  Cache-Control: no-cache
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+`;
+
+function phoneSite(): Plugin {
+  let outDir = "";
+  const files = (dir: string): string[] =>
+    readdirSync(dir).flatMap((name) => {
+      const path = join(dir, name);
+      return statSync(path).isDirectory() ? files(path) : [path];
+    });
+  return {
+    name: "tiqr-phone-site",
+    apply: "build",
+    configResolved(config) {
+      outDir = resolve(config.root, config.build.outDir);
+    },
+    closeBundle() {
+      const kept = files(outDir)
+        .map((f) => "/" + relative(outDir, f).split("\\").join("/"))
+        .filter((f) => f !== "/index.html" && !f.startsWith("/_") && f !== "/sw.js")
+        .sort();
+      const list = ["/", ...kept];
+      const version = createHash("sha256").update(list.join("\n")).digest("hex").slice(0, 12);
+      const template = readFileSync(fileURLToPath(new URL("./phone-host/sw.js", import.meta.url)), "utf8");
+      writeFileSync(
+        join(outDir, "sw.js"),
+        template.replace("__TIQR_VERSION__", version).replace("__TIQR_FILES__", JSON.stringify(list)),
+      );
+      writeFileSync(join(outDir, "_headers"), PHONE_HEADERS);
+      writeFileSync(join(outDir, "_routes.json"), JSON.stringify({ version: 1, include: ["/__/*"], exclude: [] }));
+    },
+  };
+}
+
 export default defineConfig(({ mode }) => {
   const isPhone = mode === "phone";
   // The phone build is a web build too: the screens in a browser tab.
   const isWeb = mode === "web" || isPhone;
   return {
-    plugins: isWeb ? [react(), homeScreen()] : [react()],
+    plugins: isPhone ? [react(), homeScreen(), phoneSite()] : isWeb ? [react(), homeScreen()] : [react()],
     clearScreen: false,
     define: { __TIQR_WEB__: JSON.stringify(isWeb), __TIQR_PHONE__: JSON.stringify(isPhone) },
     resolve: isPhone ? { alias: PHONE_MODULES } : isWeb ? { alias: WEB_MODULES } : undefined,

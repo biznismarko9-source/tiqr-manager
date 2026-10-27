@@ -3,7 +3,7 @@
 import type { Call, Message } from "./protocol";
 import { STOPPED } from "./protocol";
 
-type Waiting = { resolve: (value: unknown) => void; reject: (error: unknown) => void };
+type Waiting = { cmd: string; resolve: (value: unknown) => void; reject: (error: unknown) => void };
 type Listener = (event: string, payload: unknown) => void;
 
 let worker: Worker | null = null;
@@ -35,6 +35,10 @@ function open(): Worker {
       case "error": {
         const w = waiting.get(m.id);
         waiting.delete(m.id);
+        // For the browser's own console (Safari's Web Inspector on a phone
+        // plugged into a Mac): which command said no. A refusal is often
+        // expected - a form's own check - so this is the quietest level.
+        if (w) console.debug(`TIQR: ${w.cmd} answered with an error`, m.error);
         w?.reject(m.error);
         break;
       }
@@ -66,7 +70,7 @@ export function call<T>(cmd: string, args: Record<string, unknown> = {}): Promis
   const w = open();
   const id = nextId++;
   return new Promise<T>((resolve, reject) => {
-    waiting.set(id, { resolve: resolve as (v: unknown) => void, reject });
+    waiting.set(id, { cmd, resolve: resolve as (v: unknown) => void, reject });
     const message: Call = { id, cmd, args };
     w.postMessage(message);
   });

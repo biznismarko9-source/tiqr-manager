@@ -1,0 +1,117 @@
+name: TIQR for phones
+
+# 2.118.0 - TIQR in a phone's browser (src/phone, src-tauri/src/phone.rs):
+# built here and put on Cloudflare Pages, which serves it for free. Built here
+# rather than by Cloudflare: its Rust core needs Rust, clang and wasm-bindgen,
+# none of which Cloudflare's own builder has.
+#
+# A release (a v* tag) goes to the site's production address; a push to a
+# claude/ branch goes to its test address, `test.<project>.pages.dev`; the
+# Actions tab can run either by hand.
+#
+# ONE-TIME SETUP, two repository secrets (Settings -> Secrets and variables ->
+# Actions -> New repository secret):
+#   CLOUDFLARE_API_TOKEN  - Cloudflare -> My Profile -> API Tokens -> Create
+#                           Token -> Custom token, permission
+#                           "Account / Cloudflare Pages / Edit".
+#   CLOUDFLARE_ACCOUNT_ID - Cloudflare -> Workers & Pages, "Account ID" on the
+#                           right.
+# Without them the site is still built (so a broken build shows here), and
+# not put anywhere.
+
+on:
+  workflow_dispatch:
+    inputs:
+      address:
+        description: "Where to put it"
+        type: choice
+        options: [test, production]
+        default: test
+  push:
+    tags: ["v*"]
+    branches: ["claude/**"]
+    paths:
+      - "src/**"
+      - "src-tauri/src/**"
+      - "src-tauri/shim/**"
+      - "src-tauri/migrations/**"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "src-tauri/build.rs"
+      - "phone-host/**"
+      - "scripts/build-phone.mjs"
+      - "index.html"
+      - "package.json"
+      - "package-lock.json"
+      - "vite.config.ts"
+      - "tailwind.config.*"
+      - "postcss.config.*"
+      - ".github/workflows/phone-site.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phone-site-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  phone-site:
+    name: Build and put on Cloudflare Pages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Set up Rust for the browser
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: phone
+
+      # The version Cargo.lock names, or wasm-bindgen refuses the build. A
+      # ready-made copy from its own releases; built from source only if that
+      # download fails.
+      - name: Install wasm-bindgen
+        run: |
+          v=$(grep -A1 '^name = "wasm-bindgen"$' src-tauri/Cargo.lock | sed -n 's/^version = "\(.*\)"$/\1/p')
+          dir="wasm-bindgen-$v-x86_64-unknown-linux-musl"
+          if curl -fsSL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$v/$dir.tar.gz" | tar xz -C "$RUNNER_TEMP"; then
+            echo "$RUNNER_TEMP/$dir" >> "$GITHUB_PATH"
+          else
+            cargo install wasm-bindgen-cli --version "$v" --locked
+          fi
+
+      - name: Build TIQR for phones
+        run: npm run build:phone
+
+      - name: Put it on Cloudflare Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ADDRESS: ${{ github.event_name == 'workflow_dispatch' && inputs.address || (startsWith(github.ref, 'refs/tags/v') && 'production' || 'test') }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::notice::Built, not put anywhere: the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets are not set (see the top of this file)."
+            exit 0
+          fi
+          if [ "$ADDRESS" = "production" ]; then branch=main; else branch=test; fi
+          # phone-host holds the sign-in pass-through (functions/), which
+          # wrangler finds beside where it runs.
+          cd phone-host
+          npx --yes wrangler@4 pages project create tiqr --production-branch main 2>/dev/null || true
+          npx --yes wrangler@4 pages deploy ../dist-phone --project-name tiqr --branch "$branch" --commit-dirty=true
