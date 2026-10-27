@@ -532,10 +532,11 @@ export function MailSettingsPane({
   const connected = status.connected;
 
   return (
-    <Card className="flex min-w-0 flex-1 overflow-hidden p-0">
-      {/* The sections, down the left - the way Settings itself is laid out. */}
-      <nav className="flex w-48 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-slate-200 p-2 dark:border-slate-800">
-        <p className="section-title px-2.5 pb-1.5 pt-1">Mail settings</p>
+    <Card className="flex min-w-0 flex-1 flex-col overflow-hidden p-0 md:flex-row">
+      {/* The sections, down the left - the way Settings itself is laid out.
+          2.117.0: on a phone, a row along the top that scrolls sideways. */}
+      <nav className="flex shrink-0 gap-0.5 overflow-x-auto border-b border-slate-200 p-2 dark:border-slate-800 md:w-48 md:flex-col md:overflow-y-auto md:border-b-0 md:border-r">
+        <p className="section-title hidden px-2.5 pb-1.5 pt-1 md:block">Mail settings</p>
         {SECTIONS.map((sec) => {
           const on = sec.key === section;
           return (
@@ -544,7 +545,7 @@ export function MailSettingsPane({
               type="button"
               aria-current={on ? "page" : undefined}
               onClick={() => choose(sec.key)}
-              className={`flex items-start gap-2 rounded-lg px-2.5 py-2 text-left transition ${
+              className={`flex shrink-0 items-start gap-2 rounded-lg px-2.5 py-2 text-left transition ${
                 on
                   ? "bg-brand-500/[0.12] text-brand-700 dark:text-brand-300"
                   : "text-slate-600 hover:bg-surface-muted dark:text-slate-300"
@@ -553,7 +554,7 @@ export function MailSettingsPane({
               <sec.icon className="mt-0.5 h-4 w-4 shrink-0" />
               <span className="min-w-0">
                 <span className={`block text-[12.5px] ${on ? "font-semibold" : "font-medium"}`}>{sec.title}</span>
-                <span className="block text-[10.5px] leading-snug text-slate-400 dark:text-slate-500">{sec.description}</span>
+                <span className="hidden text-[10.5px] leading-snug text-slate-400 dark:text-slate-500 md:block">{sec.description}</span>
               </span>
             </button>
           );

@@ -329,7 +329,7 @@ export default function Events() {
           row fills its width at any window instead of trailing off.
           Nothing was added, removed or rewired - identical inputs, identical
           handlers, identical state. */}
-      <div className="mb-3 flex flex-wrap items-center gap-2">
+      <div className="filter-bar mb-3 flex flex-wrap items-center gap-2">
         <TabSwitcher tabs={EVENT_TABS} active={tab} onChange={setTab} />
         <div className="relative min-w-[200px] flex-1">
           <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500 dark:text-slate-400" />

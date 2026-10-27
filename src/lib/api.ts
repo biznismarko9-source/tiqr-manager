@@ -151,6 +151,8 @@ import type {
   ShareProgress,
   PromoScan,
   PromoSuggestion,
+  WebAccessOptions,
+  WebAccessStatus,
 } from "./types";
 
 export const api = {
@@ -533,6 +535,10 @@ export const api = {
 
   // Misc
   getAppInfo: () => invoke<AppInfo>("get_app_info"),
+  // 2.117.0: Web access - this TIQR's screens in a browser (web_access.rs).
+  getWebAccessStatus: () => invoke<WebAccessStatus>("get_web_access_status"),
+  setWebAccessOptions: (options: WebAccessOptions) =>
+    invoke<WebAccessStatus>("set_web_access_options", { options }),
   /** 2.0.72: swaps the live database connection to the given account's file -
    * called once by lib/auth.tsx right after Firebase confirms who's signed in
    * AND that they're approved. `legacy` decides which file: `true` reuses the

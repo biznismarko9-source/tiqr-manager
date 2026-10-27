@@ -33,6 +33,7 @@ import {
   type DiscordDestination,
   type DiscordEmbed,
   type DiscordTestResult,
+  type WebAccessStatus,
 } from "../lib/types";
 import { DiscordEmbedPreview, DiscordRowSection, rememberDiscordStatus } from "../components/Discord";
 import { formatDateTime } from "../lib/format";
@@ -92,6 +93,7 @@ import { UpdateOverlay } from "../components/UpdateOverlay";
 import { useAuth } from "../lib/auth";
 import { firebaseAuthErrorMessage } from "../lib/firebaseErrors";
 import { quietly } from "../lib/diagnostics";
+import { IS_WEB } from "../lib/platform";
 
 // 1.8.2: Settings Home - one card per category, each a real route
 // (settings/:section, added in App.tsx) rather than a scroll-to-anchor, so
@@ -1853,6 +1855,12 @@ export default function Settings() {
                 <DiscordCard />
               </SettingsGroup>
 
+              {/* 2.117.0: this TIQR's screens in a browser - on for the
+                  computer that stays on (the server), off everywhere else. */}
+              <SettingsGroup title="Web access" hint="Optional. Use TIQR in a browser, your iPhone too, through this computer.">
+                <WebAccessCard />
+              </SettingsGroup>
+
               {/* 2.109.0: MOVED. marko: "tie nastavenia ktore si dal do
                   integrations ku mailu tak odstran a presun ich do tych
                   settings v maily samotnom v zlozke".
@@ -2600,6 +2608,118 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
 // Console's own Billing page. Same "never fabricate what can't be reliably
 // computed" rule this app already follows elsewhere (see PROTECTED_AREAS.md
 // 2.2.8's own attention-center categories).
+/** 2.117.0: Web access (src-tauri/src/web_access.rs). Switched on in TIQR on
+ *  the server only; a browser using it sees where it comes from. */
+function WebAccessCard() {
+  const toast = useToast();
+  const [status, setStatus] = useState<WebAccessStatus | null>(null);
+  const [port, setPort] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api
+      .getWebAccessStatus()
+      .then((s) => {
+        setStatus(s);
+        setPort(String(s.port));
+      })
+      .catch((e) => toast.error(errMsg(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const apply = async (enabled: boolean) => {
+    const wanted = Number(port);
+    if (!Number.isInteger(wanted) || wanted < 1024 || wanted > 65535) {
+      toast.error("Choose a port from 1024 to 65535.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const s = await api.setWebAccessOptions({ enabled, port: wanted });
+      setStatus(s);
+      if (s.error) toast.error(s.error);
+      else toast.success(enabled ? "Web access is on." : "Web access is off.");
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (IS_WEB) {
+    return (
+      <Card className="p-5">
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Web access</h3>
+        <p className="mt-1 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+          You are using TIQR on your server through Web access. It is switched on and off in TIQR on the server
+          itself.
+        </p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="p-5">
+      <label className="flex items-start gap-3">
+        <input
+          type="checkbox"
+          className={CHECKBOX_CLASS}
+          checked={status?.enabled ?? false}
+          disabled={!status || saving}
+          onChange={(e) => void apply(e.target.checked)}
+        />
+        <span>
+          <span className="block text-sm font-medium text-slate-800 dark:text-slate-200">
+            Serve TIQR to a browser from this computer
+          </span>
+          <span className="mt-0.5 block text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+            Turn this on only on the computer that stays on - your server. TIQR then answers on this computer
+            alone, and Cloudflare Tunnel takes it to your address. Only the account signed in here can use it, and
+            files, windows and sign-ins to Google stay on this computer.
+          </span>
+        </span>
+      </label>
+      {status && (
+        <div className="mt-4 space-y-2 text-xs text-slate-600 dark:text-slate-300">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="w-14 shrink-0 text-slate-500 dark:text-slate-400">Port</span>
+            <input
+              className="w-24 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900"
+              inputMode="numeric"
+              value={port}
+              onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))}
+            />
+            {status.enabled && String(status.port) !== port && (
+              <Button variant="secondary" disabled={saving} onClick={() => void apply(true)}>
+                Use this port
+              </Button>
+            )}
+          </div>
+          <p>
+            {status.error ? (
+              <span className="text-rose-600 dark:text-rose-400">{status.error}</span>
+            ) : status.running && status.address ? (
+              <>
+                Answering at <code className="font-mono">{status.address}</code> - point Cloudflare Tunnel here.
+              </>
+            ) : (
+              "Off."
+            )}
+          </p>
+          {status.enabled && !status.signedIn && (
+            <p className="text-amber-700 dark:text-amber-400">Sign in here first - until then nobody can use it.</p>
+          )}
+          {!status.screensIncluded && (
+            <p className="text-amber-700 dark:text-amber-400">
+              This build of TIQR has no web screens - install a release build to use Web access.
+            </p>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function AnthropicApiKeyCard() {
   const toast = useToast();
   const [configured, setConfigured] = useState<boolean | null>(null);

@@ -353,3 +353,9 @@ export const IconEyeOff = (p: SVGProps<SVGSVGElement>) => (
     <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20" />
   </Svg>
 );
+/** 2.117.0: "More" in the phone's tab bar (Layout.tsx). */
+export const IconMenu = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="M4 6h16M4 12h16M4 18h16" />
+  </Svg>
+);

@@ -370,7 +370,7 @@ export default function Orders() {
           lists read the same way. Same inputs, same handlers, same widths,
           same wrap behaviour; the bar is only what groups them. The tab
           switcher stays pinned right. */}
-      <div className="mb-4 flex flex-wrap items-end gap-3 rounded-xl bg-surface-sunken px-3 py-2.5">
+      <div className="filter-bar mb-4 flex flex-wrap items-end gap-3 rounded-xl bg-surface-sunken px-3 py-2.5">
         <div className="w-64">
           <span className="label">Search</span>
           <div className="relative">

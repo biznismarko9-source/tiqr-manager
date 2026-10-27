@@ -33,3 +33,7 @@ firestore-debug.log
 # What Windows leaves in folders by itself.
 Thumbs.db
 desktop.ini
+
+# 2.117.0: the web screens, built by `npm run build:web` and embedded by
+# src-tauri/build.rs.
+dist-web

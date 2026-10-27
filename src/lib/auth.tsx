@@ -7,6 +7,7 @@ import {
   onAuthStateChanged,
   sendPasswordResetEmail,
   signInWithCredential,
+  signInWithPopup,
   signInWithEmailAndPassword,
   signOut,
   updateProfile,
@@ -16,6 +17,7 @@ import {
 import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db, PASSWORD_RESET_ACTION_CODE_SETTINGS } from "./firebase";
 import { api, errMsg } from "./api";
+import { IS_WEB } from "./platform";
 
 // 2.0.45: real Firebase email/password auth - replaces 2.0.44's localStorage
 // placeholder (that version's own doc comment explained why a placeholder
@@ -265,9 +267,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // no Firebase `.code`, deliberately left to propagate as-is rather than
     // wrapped. Welcome.tsx's catch block checks for `.code` to decide which
     // formatter (firebaseAuthErrorMessage vs errMsg) a given error needs.
-    const { idToken } = await api.startFirebaseGoogleSignIn();
-    const credential = GoogleAuthProvider.credential(idToken);
-    const cred = await signInWithCredential(auth, credential);
+    // 2.117.0: in a browser, Firebase's own Google window does it - the
+    // system-browser route above belongs to TIQR on a computer.
+    const cred = IS_WEB
+      ? await signInWithPopup(auth, new GoogleAuthProvider())
+      : await signInWithCredential(auth, GoogleAuthProvider.credential((await api.startFirebaseGoogleSignIn()).idToken));
     // Belt-and-suspenders, same reasoning as register() above: Firebase
     // normally fires onAuthStateChanged on its own right after this
     // resolves, but setting eagerly here means the UI never has to wait on

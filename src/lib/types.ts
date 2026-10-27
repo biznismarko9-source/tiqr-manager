@@ -964,6 +964,23 @@ export interface AppInfo {
   dbPath: string;
 }
 
+/** 2.117.0: Web access on this computer (src-tauri/src/web_access.rs). */
+export interface WebAccessOptions {
+  enabled: boolean;
+  port: number;
+}
+
+export interface WebAccessStatus extends WebAccessOptions {
+  running: boolean;
+  /** Where the tunnel points: `http://127.0.0.1:<port>`. */
+  address: string | null;
+  /** An account is signed in here - only its sign-ins get in. */
+  signedIn: boolean;
+  /** False on a build made without the web screens. */
+  screensIncluded: boolean;
+  error: string | null;
+}
+
 /** 2.0.72: result of switching the live database connection to a specific
  * account's file - see api.ts's `switchActiveDatabase` and
  * src-tauri/src/commands/database.rs's own doc comment for the full design. */

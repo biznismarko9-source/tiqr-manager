@@ -105,7 +105,10 @@ pub fn switch_active_database(
     } else {
         crate::db::resolve_user_db_path(&app, &uid)?
     };
-    switch_active_database_impl(&state, target_path)
+    let outcome = switch_active_database_impl(&state, target_path)?;
+    // 2.117.0: whose database is open is whose browser gets in (web_access.rs).
+    crate::web_access::note_signed_in(&uid);
+    Ok(outcome)
 }
 
 #[cfg(test)]
