@@ -1043,8 +1043,8 @@ pub(crate) fn failure_from(code: u16, body: &str, retry_after_secs: Option<u64>)
 static PAUSE_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
@@ -1057,7 +1057,7 @@ fn wait_for_pause() {
     let until = PAUSE_UNTIL_MS.load(Ordering::SeqCst);
     let now = now_ms();
     if until > now {
-        std::thread::sleep(Duration::from_millis((until - now).min(30_000)));
+        crate::pause(Duration::from_millis((until - now).min(30_000)));
     }
 }
 
@@ -1079,7 +1079,7 @@ pub(crate) fn gmail_json(http: &reqwest::blocking::Client, token: &str, url: &st
             Err(_) => {
                 last = GmailFailure::Network;
                 if again {
-                    std::thread::sleep(Duration::from_millis(backoff_ms(400, attempt, 5_000) as u64));
+                    crate::pause(Duration::from_millis(backoff_ms(400, attempt, 5_000) as u64));
                 }
                 continue;
             }
@@ -1106,7 +1106,7 @@ pub(crate) fn gmail_json(http: &reqwest::blocking::Client, token: &str, url: &st
             }
             GmailFailure::Server(c) => {
                 if again {
-                    std::thread::sleep(Duration::from_millis(backoff_ms(400, attempt, 5_000) as u64));
+                    crate::pause(Duration::from_millis(backoff_ms(400, attempt, 5_000) as u64));
                 }
                 last = GmailFailure::Server(c);
             }
@@ -2301,6 +2301,7 @@ static WAKE_SIGNAL: Condvar = Condvar::new();
 
 /// Started once; a second call (the window back after a reload or a
 /// sign-in) only lets a held reader go on.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn start_reader(app: tauri::AppHandle) {
     READER_HELD.store(false, Ordering::SeqCst);
     if READER_STARTED.swap(true, Ordering::SeqCst) {
@@ -2312,6 +2313,10 @@ pub(crate) fn start_reader(app: tauri::AppHandle) {
         READER_STARTED.store(false, Ordering::SeqCst);
     }
 }
+
+/// 2.118.0: a phone's browser has no thread to read mail on.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn start_reader(_app: tauri::AppHandle) {}
 
 /// 2.115.0: until when the other computer reads Gmail for this one and sends
 /// it the mail (mail_share.rs), in milliseconds since the epoch - 0 when it
@@ -2362,6 +2367,7 @@ pub(crate) fn wake_reader() {
 
 /// Waits `delay`, or for a wake only when there is none - whichever ends
 /// first.
+#[cfg(not(target_arch = "wasm32"))]
 fn sleep_until_woken(delay: Option<Duration>) {
     let woken = WAKE.lock().unwrap();
     let mut woken = match delay {
@@ -2398,6 +2404,7 @@ pub(crate) fn next_after(r: &MailSyncResult) -> Option<u64> {
     r.more_waiting.then_some(CHAIN_DELAY_MS.max(0) as u64)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn reader_loop(app: tauri::AppHandle) {
     use tauri::{Emitter, Manager};
     let mut next = {
@@ -3639,7 +3646,7 @@ mod tests {
 
     #[test]
     fn a_wake_cuts_the_wait_short_and_one_sent_during_a_run_is_kept() {
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         let waker = std::thread::spawn(|| {
             std::thread::sleep(Duration::from_millis(50));
             wake_reader();
@@ -3649,7 +3656,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(10), "woken, not timed out");
         // Woken while no one was waiting: the next wait ends at once.
         wake_reader();
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         sleep_until_woken(None);
         assert!(started.elapsed() < Duration::from_secs(10));
     }
@@ -3813,7 +3820,7 @@ mod tests {
                 ok(json!({"emailAddress": "me@gmail.com", "historyId": "1"}))
             }
         });
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         let v = gmail_json(&client(), "t", &format!("{}/profile", gmail.api)).unwrap();
         assert_eq!(v["historyId"], "1");
         assert_eq!(gmail.requests().len(), 2, "asked again after the wait");

@@ -48,7 +48,8 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 use tauri::State;
 
 /// The logo file in the repository itself (`docs/tiqr-logo.png` on `main`),
@@ -1140,6 +1141,7 @@ fn record(job: &Job, status: &str, message: &str) {
     log.truncate(KEPT_DELIVERIES);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn enqueue(job: Job) {
     static QUEUE: OnceLock<Option<Mutex<mpsc::Sender<Job>>>> = OnceLock::new();
     let queue = QUEUE.get_or_init(|| {
@@ -1163,6 +1165,24 @@ fn enqueue(job: Job) {
     }
 }
 
+/// 2.118.0: a phone's browser has no thread to send from, so the message
+/// goes now - the screen that asked waits for it.
+#[cfg(target_arch = "wasm32")]
+fn enqueue(job: Job) {
+    let (status, message) = match reqwest::blocking::Client::builder().timeout(Duration::from_secs(15)).build() {
+        Ok(c) => {
+            let (status, message, _) = deliver(&c, &job.url, &job.post.payload);
+            (status, message)
+        }
+        Err(e) => ("failed", format!("could not build an HTTP client: {e}")),
+    };
+    record(&job, status, &message);
+    if let Some(reply) = &job.reply {
+        let _ = reply.send((status, message));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn run_sender(rx: mpsc::Receiver<Job>) {
     let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(15)).build();
     for job in rx {
@@ -1204,7 +1224,7 @@ fn deliver(client: &reqwest::blocking::Client, url: &str, payload: &Value) -> (&
                     _ => Duration::ZERO,
                 };
                 if attempt < MAX_ATTEMPTS && (code == 429 || (500..=599).contains(&code)) {
-                    std::thread::sleep(retry_after.unwrap_or_else(|| backoff(attempt)));
+                    crate::pause(retry_after.unwrap_or_else(|| backoff(attempt)));
                     continue;
                 }
                 let (status, _, message) = interpret_discord_status(code);
@@ -1220,7 +1240,7 @@ fn deliver(client: &reqwest::blocking::Client, url: &str, payload: &Value) -> (&
             }
             Err(e) if e.is_connect() => {
                 if attempt < MAX_ATTEMPTS {
-                    std::thread::sleep(backoff(attempt));
+                    crate::pause(backoff(attempt));
                     continue;
                 }
                 return (
@@ -1300,7 +1320,11 @@ pub async fn send_to_discord(state: State<'_, AppState>, kind: String, id: i64) 
     }
     let (tx, rx) = mpsc::channel();
     enqueue(Job { dest, url, post, manual: true, reply: Some(tx) });
+    #[cfg(not(target_arch = "wasm32"))]
     let answer = tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(90))).await;
+    // 2.118.0: on a phone `enqueue` has sent it already (no thread there).
+    #[cfg(target_arch = "wasm32")]
+    let answer = tauri::async_runtime::spawn_blocking(move || rx.try_recv()).await;
     Ok(match answer {
         Ok(Ok((status, message))) => {
             let delivered = status == "delivered";

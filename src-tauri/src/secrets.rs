@@ -48,7 +48,7 @@ fn file_for(conn: &Connection) -> AppResult<Option<PathBuf>> {
 }
 
 fn read_file(path: &PathBuf) -> AppResult<BTreeMap<String, String>> {
-    match std::fs::read_to_string(path) {
+    match crate::files::read_to_string(path) {
         Ok(text) if text.trim().is_empty() => Ok(BTreeMap::new()),
         Ok(text) => serde_json::from_str(&text).map_err(|e| {
             AppError::Io(format!(
@@ -62,18 +62,11 @@ fn read_file(path: &PathBuf) -> AppResult<BTreeMap<String, String>> {
 }
 
 /// Written whole to a temporary file and renamed over the old one, so a
-/// crash half way leaves the previous version, never half of one.
+/// crash half way leaves the previous version, never half of one
+/// (files.rs; on a phone, one row written at once).
 fn write_file(path: &PathBuf, values: &BTreeMap<String, String>) -> AppResult<()> {
-    let tmp = path.with_extension("json.tmp");
     let text = serde_json::to_string_pretty(values).map_err(|e| AppError::Other(e.to_string()))?;
-    std::fs::write(&tmp, text).map_err(|e| AppError::Io(format!("Couldn't save this computer's sign-ins: {e}")))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    }
-    std::fs::rename(&tmp, path).map_err(|e| AppError::Io(format!("Couldn't save this computer's sign-ins: {e}")))?;
-    Ok(())
+    crate::files::replace(path, &text).map_err(|e| AppError::Io(format!("Couldn't save this computer's sign-ins: {e}")))
 }
 
 fn ensure_temp_table(conn: &Connection) -> AppResult<()> {
@@ -191,7 +184,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "tiqr-secrets-{name}-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).unwrap().as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("tiqr-manager.sqlite3");

@@ -302,7 +302,7 @@ fn accept_one_redirect(listener: &TcpListener, timeout: Duration, cancel: &Atomi
     listener
         .set_nonblocking(true)
         .map_err(|e| AppError::External(format!("could not configure the local sign-in listener: {e}")))?;
-    let start = std::time::Instant::now();
+    let start = web_time::Instant::now();
     let mut stream = loop {
         match listener.accept() {
             Ok((stream, _)) => break stream,
@@ -535,6 +535,7 @@ fn signed_in_account_from_tokens(
 /// `scope` is the one thing that actually differs between those two
 /// callers (`OAUTH_SCOPE` vs `FIREBASE_SIGN_IN_SCOPE`) - `client` differs
 /// too, but is already a parameter for other reasons.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run_sign_in(client: &OAuthClient, scope: &str, app: &tauri::AppHandle, cancel: &AtomicBool) -> AppResult<SignedInAccount> {
     use tauri_plugin_opener::OpenerExt;
 
@@ -566,6 +567,14 @@ pub fn run_sign_in(client: &OAuthClient, scope: &str, app: &tauri::AppHandle, ca
     let email = fetch_email(&tokens.access_token)?;
 
     signed_in_account_from_tokens(tokens, email, scope)
+}
+
+/// 2.118.0: a phone's browser cannot wait on a port of its own for Google's
+/// answer. TIQR's own sign-in there is the page's (Firebase); this one - a
+/// Google account for Drive, Sheets or Gmail - is the computer's.
+#[cfg(target_arch = "wasm32")]
+pub fn run_sign_in(_client: &OAuthClient, _scope: &str, _app: &tauri::AppHandle, _cancel: &AtomicBool) -> AppResult<SignedInAccount> {
+    Err(AppError::Validation("Connect the Google account on the computer - the phone uses it from there.".to_string()))
 }
 
 #[cfg(test)]
@@ -862,7 +871,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         cancel.store(true, Ordering::Relaxed);
 
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         let result = handle.join().unwrap();
         assert!(result.is_err(), "a cancelled wait must return an error, never a successful RedirectResult");
         assert!(

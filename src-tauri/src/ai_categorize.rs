@@ -307,7 +307,7 @@ fn ai_classify_category_name(
     let mut attempt = send_anthropic_request(api_key, &prompt);
     if let Err((Some(status), _)) = attempt {
         if is_retriable_anthropic_status(status) {
-            std::thread::sleep(std::time::Duration::from_millis(750));
+            crate::pause(std::time::Duration::from_millis(750));
             attempt = send_anthropic_request(api_key, &prompt);
         }
     }

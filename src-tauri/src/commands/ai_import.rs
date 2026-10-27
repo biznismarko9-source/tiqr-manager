@@ -721,7 +721,7 @@ fn analyze_impl(kind: &str, media_type: &str, image_base64: &str) -> AppResult<(
     let mut attempt = send_anthropic_request(&api_key, &body);
     if let Err((Some(status), _)) = attempt {
         if is_retriable_anthropic_status(status) {
-            std::thread::sleep(std::time::Duration::from_millis(750));
+            crate::pause(std::time::Duration::from_millis(750));
             attempt = send_anthropic_request(&api_key, &body);
         }
     }

@@ -5806,7 +5806,7 @@ mod tests {
             html.push_str(&format!("<div class=\"x\">row {i} </div>"));
             html.push_str("<script>trackPixel();</script>");
         }
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         let out = strip_html(&html);
         let took = started.elapsed();
 
@@ -5824,7 +5824,7 @@ mod tests {
     #[test]
     fn an_enormous_body_is_capped_rather_than_expanded() {
         let huge = format!("<p>{}</p>", "word ".repeat(400_000));
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         let out = strip_html(&huge);
         assert!(out.len() <= HTML_SCAN_LIMIT + 16, "{} bytes", out.len());
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
@@ -6834,7 +6834,7 @@ mod tests {
     #[test]
     fn a_long_body_is_read_in_a_blink() {
         let body = "Lorem ipsum 12,00 EUR dolor sit amet, total 4,00 EUR. 3 tickets.\n".repeat(400);
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         let _ = read_message("Your order", &body);
         assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
     }
@@ -8367,17 +8367,17 @@ mod tests {
         tx.commit().unwrap();
         let mut keys: Vec<String> = BUILTIN_FOLDERS.iter().map(|k| k.to_string()).collect();
         keys.extend((0..10).map(|i| format!("label_{i}")));
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         let counts = folder_counts_impl(&conn, &keys).unwrap();
         let counts_ms = t.elapsed().as_millis();
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         let page = list_folder_impl(&conn, "inbox", None, None, 200).unwrap();
         let inbox_ms = t.elapsed().as_millis();
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         let rare = list_folder_impl(&conn, "label_9", None, None, 200).unwrap();
         let rare_ms = t.elapsed().as_millis();
         let last = page.last().unwrap();
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         let next = list_folder_impl(&conn, "inbox", None, Some((&last.received_at, last.id)), 200).unwrap();
         let next_ms = t.elapsed().as_millis();
         println!("100k: counts {counts_ms} ms, inbox page {inbox_ms} ms, empty label {rare_ms} ms, next page {next_ms} ms");

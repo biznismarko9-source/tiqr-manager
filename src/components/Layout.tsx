@@ -43,7 +43,7 @@ import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { IS_WEB } from "../lib/platform";
+import { IS_PHONE, IS_WEB } from "../lib/platform";
 import type { MailSyncResult, ScanRunFinishedPayload } from "../lib/types";
 import { Tour } from "./Tour";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -246,7 +246,9 @@ export default function Layout() {
     const off = onLiveSync(setLive);
     // 2.117.0: in a browser, TIQR on the server is the computer - its own
     // window there runs live sync and the mail sharing, never a browser tab.
-    const stop = IS_WEB ? () => undefined : startLiveSync(uid);
+    // 2.118.0: TIQR on a phone is TIQR itself, and live sync is how its data
+    // gets there.
+    const stop = IS_WEB && !IS_PHONE ? () => undefined : startLiveSync(uid);
     // 2.115.0: beside it, in the same Firestore space - while both computers
     // run, one reads Gmail and sends the other the mail.
     const stopShare = IS_WEB ? () => undefined : startMailShare(uid);

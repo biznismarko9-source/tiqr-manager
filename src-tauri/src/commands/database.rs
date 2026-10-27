@@ -71,7 +71,7 @@ pub(crate) fn switch_active_database_impl(state: &AppState, target_path: PathBuf
     // "changed" verdict it never earned.
     crate::commands::cloud_sync::flush_local_dirty(&conn_guard);
 
-    let is_new = !target_path.exists();
+    let is_new = !crate::files::exists(&target_path);
     // 2.110.0: with that account's own mail file attached (mail_store.rs).
     let new_conn = crate::db::open_live_connection(&target_path)?;
     crate::db::run_migrations(&new_conn)?;
@@ -100,6 +100,10 @@ pub fn switch_active_database(
     uid: String,
     legacy: bool,
 ) -> AppResult<DatabaseSwitchOutcome> {
+    // 2.118.0: a phone keeps every account in a file of its own - the one
+    // older shared file is a computer's history, and live sync fills the
+    // phone's.
+    let legacy = legacy && cfg!(not(target_arch = "wasm32"));
     let target_path = if legacy {
         crate::db::resolve_db_path(&app)?
     } else {
@@ -107,6 +111,7 @@ pub fn switch_active_database(
     };
     let outcome = switch_active_database_impl(&state, target_path)?;
     // 2.117.0: whose database is open is whose browser gets in (web_access.rs).
+    #[cfg(not(target_arch = "wasm32"))]
     crate::web_access::note_signed_in(&uid);
     Ok(outcome)
 }

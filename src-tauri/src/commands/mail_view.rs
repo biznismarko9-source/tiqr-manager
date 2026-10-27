@@ -621,7 +621,7 @@ fn kept_pictures(json: Option<&str>) -> Option<Vec<KeptPicture>> {
 /// opened - but not on every opening, for a server that just says no.
 fn picture_retry_due(message_id: i64) -> bool {
     use std::sync::OnceLock;
-    use std::time::Instant;
+    use web_time::Instant;
     static TRIED: OnceLock<Mutex<HashMap<i64, Instant>>> = OnceLock::new();
     let mut tried = TRIED.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(|e| e.into_inner());
     let due = tried.get(&message_id).is_none_or(|at| at.elapsed() >= Duration::from_secs(5 * 60));
@@ -637,6 +637,11 @@ fn copy_pictures<F>(wanted: &[(ImageSource, String)], dir: &Path, remote: bool, 
 where
     F: Fn(&str) -> Option<Vec<u8>> + Sync,
 {
+    // 2.118.0: a phone's browser has no threads to copy on, and no folder
+    // to copy to; its mail shows without the pictures for now.
+    if cfg!(target_arch = "wasm32") {
+        return;
+    }
     let need: Vec<&(ImageSource, String)> = wanted.iter().filter(|(_, key)| !dir.join(key).exists()).collect();
     if need.is_empty() {
         return;
@@ -1344,6 +1349,7 @@ fn mark_from_internet(path: &Path) {
 }
 
 /// Opens an attachment in its own app - only a kind that cannot run anything.
+#[cfg(not(target_arch = "wasm32"))]
 #[tauri::command]
 pub async fn open_mail_attachment(app: tauri::AppHandle, state: State<'_, AppState>, id: i64, part_id: String) -> AppResult<()> {
     let (path, filename, mime) = attachment_file(&state, id, &part_id).await?;
@@ -1581,6 +1587,7 @@ pub async fn download_mail_link(state: State<'_, AppState>, id: i64, url: String
 
 /// Saves an attachment wherever marko picks. Returns the file name, or
 /// `None` when the dialog was cancelled.
+#[cfg(not(target_arch = "wasm32"))]
 #[tauri::command]
 pub async fn save_mail_attachment(app: tauri::AppHandle, state: State<'_, AppState>, id: i64, part_id: String) -> AppResult<Option<String>> {
     let (path, filename, _) = attachment_file(&state, id, &part_id).await?;

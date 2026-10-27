@@ -112,6 +112,24 @@ fn main() {
     fs::write(Path::new(&out_dir).join("web_assets.rs"), table).expect("failed to write the web screens table");
     println!("cargo:rerun-if-changed=../dist-web");
 
+    // 2.118.0: the phone build (WebAssembly) has no Tauri app to configure,
+    // and must never carry the credentials above: its files are a public web
+    // page. (They are written empty for it below.)
+    if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("wasm32") {
+        for file in [
+            "google_service_account.json",
+            "google_oauth_client_id.txt",
+            "google_oauth_client_secret.txt",
+            "firebase_google_oauth_client_id.txt",
+            "firebase_google_oauth_client_secret.txt",
+            "anthropic_api_key.txt",
+        ] {
+            fs::write(Path::new(&out_dir).join(file), "").expect("failed to empty an embedded credential");
+        }
+        println!("cargo::rustc-check-cfg=cfg(desktop)");
+        println!("cargo::rustc-check-cfg=cfg(mobile)");
+        return;
+    }
     tauri_build::build()
 }
 

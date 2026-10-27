@@ -90,6 +90,10 @@ use std::sync::{mpsc, Arc};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+// 2.118.0: the phone build keeps the sessions and the figures (Price Checker's
+// analysis reads them) but not the scanner window - opening, scanning,
+// running and closing one are marked `cfg(not(target_arch = "wasm32"))`.
+
 /// The extraction script, embedded at compile time - see its own module
 /// comment for the four-layer design. Sent verbatim to
 /// `WebviewWindow::eval_with_callback` on every `scan_visible_prices` call;
@@ -721,6 +725,7 @@ fn emit_scan_error(app: &AppHandle, request_id: u64, message: &str) {
 /// Tauri command's calling thread, this project's own established,
 /// previously-hit constraint) and the real outcome arrives via
 /// `price-scanner-opened`/`price-scanner-error`.
+#[cfg(not(target_arch = "wasm32"))]
 #[tauri::command]
 pub fn open_price_scanner(app: AppHandle, state: State<AppState>, request_id: u64, event_id: i64, marketplace_id: i64, url: String) -> AppResult<()> {
     let parsed_url = parse_scanner_url(&url)?;
@@ -800,6 +805,7 @@ pub fn open_price_scanner(app: AppHandle, state: State<AppState>, request_id: u6
 /// marketplace card to "Scanning" the instant it calls this, the same
 /// "command returns fast, the real outcome follows as an event" contract
 /// `open_price_scanner` uses.
+#[cfg(not(target_arch = "wasm32"))]
 #[tauri::command]
 pub fn scan_visible_prices(app: AppHandle, state: State<AppState>, request_id: u64) -> AppResult<()> {
     let (window_label, cancel_flag) = {
@@ -845,6 +851,7 @@ pub fn scan_visible_prices(app: AppHandle, state: State<AppState>, request_id: u
 /// it AGAIN after the eval returns (a Stop during an in-flight eval must drop
 /// the result rather than merge it), and unwrap the double-encoded payload via
 /// `parse_scan_js_payload`.
+#[cfg(not(target_arch = "wasm32"))]
 enum PassOutcome {
     /// The pass completed; this many listings were NEW to the session.
     Added(u32),
@@ -855,6 +862,7 @@ enum PassOutcome {
     Failed,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn perform_one_scan(
     handle: &AppHandle,
     request_id: u64,
@@ -931,6 +939,7 @@ fn perform_one_scan(
 ///
 /// Not a monitor: see the RUN_* constants above for why this is finite by
 /// construction and what ends it.
+#[cfg(not(target_arch = "wasm32"))]
 #[tauri::command]
 pub fn start_price_scan_run(app: AppHandle, state: State<AppState>, request_id: u64) -> AppResult<()> {
     let (window_label, cancel_flag) = {
@@ -947,7 +956,7 @@ pub fn start_price_scan_run(app: AppHandle, state: State<AppState>, request_id: 
 
     let handle = app.clone();
     std::thread::spawn(move || {
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         let mut passes: u32 = 0;
         let mut empty_passes: u32 = 0;
         let reason: &str = loop {
@@ -1121,6 +1130,7 @@ pub fn cancel_price_scan(state: State<AppState>, request_id: u64) -> AppResult<(
 /// a moment earlier) is a harmless no-op, never an error, since from the
 /// UI's point of view the end state ("no session, no card controls") is
 /// identical either way.
+#[cfg(not(target_arch = "wasm32"))]
 #[tauri::command]
 pub fn close_price_scanner(app: AppHandle, state: State<AppState>, request_id: u64, close_window: bool) -> AppResult<()> {
     let window_label = {

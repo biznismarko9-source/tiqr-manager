@@ -84,8 +84,10 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use rusqlite::{params, Connection};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+use web_time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::State;
+#[cfg(not(target_arch = "wasm32"))]
 use tauri_plugin_notification::NotificationExt;
 
 const NOTIFICATION_CONFIG_KEY: &str = "notification_config";
@@ -573,6 +575,7 @@ fn mark_sent(conn: &Connection, category: NotificationCategory, today: NaiveDate
 /// precisely so he does not have to sit and watch it. Nothing else about this
 /// module's config or category gating is involved: the run's notification is
 /// the direct result of a button he pressed, not a monitored condition.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn send_desktop_notification(app: &tauri::AppHandle, title: &str, body: &str) -> AppResult<()> {
     app.notification()
         .builder()
@@ -580,6 +583,12 @@ pub(crate) fn send_desktop_notification(app: &tauri::AppHandle, title: &str, bod
         .body(body)
         .show()
         .map_err(|e| AppError::Other(format!("could not show desktop notification: {e}")))
+}
+
+/// 2.118.0: a phone's browser has no desktop to show one on.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn send_desktop_notification(_app: &tauri::AppHandle, _title: &str, _body: &str) -> AppResult<()> {
+    Err(AppError::Other("Desktop notifications show on the computer, not on the phone.".to_string()))
 }
 
 /// ntfy.sh's public server needs no authentication and no application-level

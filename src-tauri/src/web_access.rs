@@ -42,7 +42,8 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+use web_time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::ipc::{CallbackFn, InvokeBody, InvokeResponse, InvokeResponseBody};
 use tauri::webview::InvokeRequest;
 use tauri::{AppHandle, Listener, Manager, Runtime};
@@ -955,12 +956,13 @@ mod tests {
     #[test]
     fn every_refused_command_is_a_command_this_app_has() {
         // A renamed command would otherwise quietly stop being refused.
-        let lib = include_str!("lib.rs");
+        // 2.118.0: the commands are listed in command_list.rs.
+        let list = include_str!("command_list.rs");
         for (names, _) in BLOCKED {
             for name in *names {
                 assert!(
-                    lib.contains(&format!("::{name},")) || lib.contains(&format!("::{name}\n")),
-                    "{name} is not registered in lib.rs"
+                    list.contains(&format!("::{name},")) || list.contains(&format!("::{name}\n")),
+                    "{name} is not registered in command_list.rs"
                 );
             }
         }

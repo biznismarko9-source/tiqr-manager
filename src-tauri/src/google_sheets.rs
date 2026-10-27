@@ -56,6 +56,7 @@
 
 use crate::error::{AppError, AppResult};
 use chrono::{DateTime, Utc};
+#[cfg(not(target_arch = "wasm32"))]
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::{Deserialize, Serialize};
@@ -125,6 +126,7 @@ struct JwtClaims<'a> {
 /// flow - RFC 7523). Pure and entirely offline: no network call happens
 /// here, which is what makes it unit-testable in this sandbox even though
 /// the token exchange that consumes it (`fetch_access_token`) is not.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn build_signed_jwt(key: &ServiceAccountKey, scope: &str, now: DateTime<Utc>) -> AppResult<String> {
     let claims = JwtClaims {
         iss: &key.client_email,
@@ -138,6 +140,13 @@ pub fn build_signed_jwt(key: &ServiceAccountKey, scope: &str, now: DateTime<Utc>
         .map_err(|e| AppError::External(format!("service account private key is not valid PEM: {e}")))?;
     jsonwebtoken::encode(&Header::new(Algorithm::RS256), &claims, &encoding_key)
         .map_err(|e| AppError::External(format!("failed to sign the Google sign-in request: {e}")))
+}
+
+/// 2.118.0: the phone build carries no service account (build.rs), so there
+/// is nothing to sign with - Sheets sync is the computer's.
+#[cfg(target_arch = "wasm32")]
+pub fn build_signed_jwt(_key: &ServiceAccountKey, _scope: &str, _now: DateTime<Utc>) -> AppResult<String> {
+    Err(AppError::External("Google Sheets sync runs on the computer, not on the phone.".to_string()))
 }
 
 #[derive(Deserialize)]

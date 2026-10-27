@@ -22,6 +22,15 @@ const WEB_MODULES = [
   { find: /^@tauri-apps\/plugin-deep-link$/, replacement: web("deepLink") },
 ];
 
+// 2.118.0: `npm run build:phone` makes TIQR itself for a phone's browser - the
+// computer's Rust built for it runs in a worker of the page (src/phone), so
+// commands and events go there instead of to a server. The rest is the web
+// build's: a browser tab, links in a new tab, no file dialogs.
+const phone = (name: string) => fileURLToPath(new URL(`./src/phone/${name}.ts`, import.meta.url));
+const PHONE_MODULES = WEB_MODULES.map((m) =>
+  m.replacement === web("core") ? { ...m, replacement: phone("core") } : m.replacement === web("event") ? { ...m, replacement: phone("event") } : m,
+);
+
 // 2.117.0: "Add to Home Screen" on an iPhone - the TIQR icon and a window
 // without Safari's bars - and the same for "Install app" on Android.
 function homeScreen(): Plugin {
@@ -63,12 +72,16 @@ function homeScreen(): Plugin {
 }
 
 export default defineConfig(({ mode }) => {
-  const isWeb = mode === "web";
+  const isPhone = mode === "phone";
+  // The phone build is a web build too: the screens in a browser tab.
+  const isWeb = mode === "web" || isPhone;
   return {
     plugins: isWeb ? [react(), homeScreen()] : [react()],
     clearScreen: false,
-    define: { __TIQR_WEB__: JSON.stringify(isWeb) },
-    resolve: isWeb ? { alias: WEB_MODULES } : undefined,
+    define: { __TIQR_WEB__: JSON.stringify(isWeb), __TIQR_PHONE__: JSON.stringify(isPhone) },
+    resolve: isPhone ? { alias: PHONE_MODULES } : isWeb ? { alias: WEB_MODULES } : undefined,
+    // The phone build's worker (src/phone/worker.ts) is a module of its own.
+    worker: { format: "es" },
     server: {
       port: 1420,
       strictPort: true,
@@ -78,7 +91,16 @@ export default defineConfig(({ mode }) => {
       },
     },
     envPrefix: ["VITE_", "TAURI_"],
-    build: isWeb
+    build: isPhone
+      ? {
+          // The database in a worker needs Safari 16.4 (iOS 16.4) and newer.
+          outDir: "dist-phone",
+          emptyOutDir: true,
+          target: ["es2020", "safari16.4", "chrome109"],
+          minify: "esbuild",
+          sourcemap: false,
+        }
+      : isWeb
       ? {
           // Phones: Safari on iOS 14 and newer.
           outDir: "dist-web",

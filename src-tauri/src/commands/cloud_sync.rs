@@ -643,7 +643,7 @@ pub(crate) fn retrying<T>(mut op: impl FnMut() -> AppResult<T>) -> AppResult<T> 
                 if attempt >= RETRY_DELAYS_MS.len() || !is_worth_retrying(&e) {
                     return Err(e);
                 }
-                std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAYS_MS[attempt]));
+                crate::pause(std::time::Duration::from_millis(RETRY_DELAYS_MS[attempt]));
                 attempt += 1;
             }
         }

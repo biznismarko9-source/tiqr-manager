@@ -37,3 +37,7 @@ desktop.ini
 # 2.117.0: the web screens, built by `npm run build:web` and embedded by
 # src-tauri/build.rs.
 dist-web
+# 2.118.0: TIQR for a phone's browser, built by `npm run build:phone` - the
+# Rust built for the browser (src/phone/pkg) and the site itself.
+src/phone/pkg
+dist-phone

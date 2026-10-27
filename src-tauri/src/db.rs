@@ -326,7 +326,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
 /// the Program Files install folder), on Linux under `~/.local/share/...`.
 pub fn resolve_db_path(app: &tauri::AppHandle) -> anyhow::Result<PathBuf> {
     let dir = app.path().app_data_dir()?;
-    std::fs::create_dir_all(&dir)?;
+    crate::files::create_dir_all(&dir)?;
     Ok(dir.join("tiqr-manager.sqlite3"))
 }
 
@@ -361,7 +361,7 @@ pub fn sanitize_uid_for_filename(uid: &str) -> anyhow::Result<String> {
 pub fn resolve_user_db_path(app: &tauri::AppHandle, uid: &str) -> anyhow::Result<PathBuf> {
     let safe_uid = sanitize_uid_for_filename(uid)?;
     let dir = app.path().app_data_dir()?.join("users").join(safe_uid);
-    std::fs::create_dir_all(&dir)?;
+    crate::files::create_dir_all(&dir)?;
     Ok(dir.join("tiqr-manager.sqlite3"))
 }
 
@@ -433,7 +433,7 @@ pub(crate) fn register_functions(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 pub fn open_connection(path: &std::path::Path) -> rusqlite::Result<Connection> {
-    let conn = Connection::open(path)?;
+    let mut conn = Connection::open(path)?;
     register_functions(&conn)?;
     // journal_mode returns a row with the resulting mode, so query_row it explicitly.
     let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
@@ -446,15 +446,13 @@ pub fn open_connection(path: &std::path::Path) -> rusqlite::Result<Connection> {
     // possible work: one atomic store, no allocation, no I/O, no SQL. (A hook
     // must never write to the database it is watching.)
     //
-    // No `?` here on purpose: rusqlite 0.32.1's `Connection::update_hook`
-    // returns `()`, not `Result<()>` - verified against the crate's own source
-    // at tag v0.32.1, `src/hooks/mod.rs:380`, after docs.rs was read the other
-    // way round. Adding `?` is a compile error on both platforms.
+    // 2.118.0: rusqlite 0.41's `update_hook` takes `&mut self` and returns
+    // `Result<()>` (0.32.1's returned `()`), hence the `mut` above and the `?`.
     conn.update_hook(Some(|_action: rusqlite::hooks::Action, db: &str, table: &str, _rowid: i64| {
         if counts_as_user_change(db, table) {
             LOCAL_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
         }
-    }));
+    }))?;
     Ok(conn)
 }
 
@@ -736,7 +734,7 @@ mod migration_017_safety_tests {
 #[cfg(test)]
 mod perf_smoke {
     use super::*;
-    use std::time::Instant;
+    use web_time::Instant;
 
     struct TempDb {
         path: std::path::PathBuf,

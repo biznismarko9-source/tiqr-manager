@@ -222,7 +222,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "tiqr-shared-{}-{}.sqlite3",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).unwrap().as_nanos()
         ));
         {
             let remote = Connection::open(&path).unwrap();

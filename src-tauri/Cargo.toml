@@ -14,6 +14,49 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 2.14.0: "hooks" is what makes automatic sync safe. It gives us SQLite's own
+# update hook, which fires on EVERY insert, update and delete - including the
+# 17 tables that carry no `updated_at` column (transfers, every lookup list),
+# where a scan over timestamps would silently miss an edit. Not a new
+# dependency: the same rusqlite, one more feature flag.
+rusqlite = { version = "0.41", features = ["bundled", "backup", "hooks", "functions"] }
+chrono = { version = "0.4", features = ["serde"] }
+# 2.118.0: the clock. On a computer it is std::time itself; in a phone's browser
+# (WebAssembly), where std::time has no clock, it asks JavaScript.
+web-time = "1"
+csv = "1"
+anyhow = "1"
+thiserror = "2"
+percent-encoding = "2"
+# Only used directly in google_sheets.rs's own test module, to decode a JWT
+# segment for a self-check - jsonwebtoken depends on it too, but a crate may
+# only `use` what it declares itself.
+base64 = "0.22"
+# 2.0.5: PKCE (RFC 7636) for the new "Sign in with Google" flow -
+# google_oauth.rs generates a random code_verifier (rand) and its SHA-256
+# code_challenge (sha2), the standard way an installed/desktop app proves to
+# Google it's the same client that started the sign-in when it later
+# exchanges the authorization code for tokens. Not used by, and not needed
+# by, the existing service-account JWT flow (google_sheets.rs), which
+# authenticates as a fixed machine identity rather than a human signing in.
+rand = "0.9"
+sha2 = "0.10"
+# 2.113.0: the mail reader. ammonia (built on html5ever, the HTML parser
+# Firefox's Servo uses) turns an email's HTML into markup with no script, no
+# event handler and no link but http/https/mailto before it reaches the
+# screen; encoding_rs reads a body in whatever charset it was sent in
+# (Slovak mail still arrives as ISO-8859-2 / Windows-1250). See
+# commands/mail_view.rs.
+ammonia = "4"
+encoding_rs = "0.8"
+
+
+# 2.118.0: the computer's own parts - Tauri and its plugins, the blocking
+# HTTP client, Web access's server. The phone build (WebAssembly) compiles the
+# same command modules without them (see shim/ and lib.rs).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-process = "2"
@@ -60,18 +103,6 @@ tauri-plugin-opener = "2"
 # desktop notifications need no per-user setup at all, exactly what marko
 # asked to keep.
 tauri-plugin-notification = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-# 2.14.0: "hooks" is what makes automatic sync safe. It gives us SQLite's own
-# update hook, which fires on EVERY insert, update and delete - including the
-# 17 tables that carry no `updated_at` column (transfers, every lookup list),
-# where a scan over timestamps would silently miss an edit. Not a new
-# dependency: the same rusqlite, one more feature flag.
-rusqlite = { version = "0.32", features = ["bundled", "backup", "hooks", "functions"] }
-chrono = { version = "0.4", features = ["serde"] }
-csv = "1"
-anyhow = "1"
-thiserror = "2"
 # Google Sheets sync (Settings -> Integrations). Deliberately NOT the
 # generated google-sheets4/yup-oauth2 clients - see google_sheets.rs's module
 # doc comment for why a small hand-rolled REST client fits this codebase
@@ -81,34 +112,30 @@ thiserror = "2"
 # transitively, so the dependency tree only ever builds one copy of reqwest.
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "form", "rustls"] }
 jsonwebtoken = "9"
-percent-encoding = "2"
-# Only used directly in google_sheets.rs's own test module, to decode a JWT
-# segment for a self-check - jsonwebtoken depends on it too, but a crate may
-# only `use` what it declares itself.
-base64 = "0.22"
-# 2.0.5: PKCE (RFC 7636) for the new "Sign in with Google" flow -
-# google_oauth.rs generates a random code_verifier (rand) and its SHA-256
-# code_challenge (sha2), the standard way an installed/desktop app proves to
-# Google it's the same client that started the sign-in when it later
-# exchanges the authorization code for tokens. Not used by, and not needed
-# by, the existing service-account JWT flow (google_sheets.rs), which
-# authenticates as a fixed machine identity rather than a human signing in.
-rand = "0.9"
-sha2 = "0.10"
-# 2.113.0: the mail reader. ammonia (built on html5ever, the HTML parser
-# Firefox's Servo uses) turns an email's HTML into markup with no script, no
-# event handler and no link but http/https/mailto before it reaches the
-# screen; encoding_rs reads a body in whatever charset it was sent in
-# (Slovak mail still arrives as ISO-8859-2 / Windows-1250). See
-# commands/mail_view.rs.
-ammonia = "4"
-encoding_rs = "0.8"
 # 2.117.0: Web access (web_access.rs) - this TIQR's screens in a browser,
 # served on 127.0.0.1 only. hyper, tokio and futures-util were already in the
 # build through reqwest and Tauri; axum is the small router on top of them.
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
 tokio = { version = "1", features = ["net", "sync", "time", "rt"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+# 2.118.0: TIQR in a phone's browser. `tauri` there is shim/ (lib.rs:
+# `extern crate tiqr_tauri_shim as tauri`); SQLite is rusqlite's own build for
+# the browser; time, randomness and the page come from JavaScript.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tiqr-tauri-shim = { path = "shim" }
+tiqr-reqwest-shim = { path = "shim/reqwest" }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde-wasm-bindgen = "0.6"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+chrono = { version = "0.4", features = ["serde", "wasmbind"] }
+# SQLite itself, as rusqlite uses it there, with the browser's clock and
+# randomness (`wasm-bindgen`) - and the database kept in the browser's own
+# storage for this site (OPFS), so it is still there next time.
+sqlite-wasm-rs = { version = "0.6", features = ["wasm-bindgen"] }
+sqlite-wasm-vfs = { version = "0.3", features = ["sahpool"] }
 
 [dev-dependencies]
 # 2.117.0: Tauri's mock runtime - web_access.rs's tests hand a command to a
@@ -121,3 +148,9 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+# 2.118.0: TIQR for a phone's browser (`npm run build:phone`) - the release
+# build, with the names wasm-bindgen reads to make the browser's half kept.
+[profile.phone]
+inherits = "release"
+strip = false

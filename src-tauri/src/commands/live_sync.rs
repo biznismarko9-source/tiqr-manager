@@ -1203,12 +1203,12 @@ pub(crate) fn device_id(db_path: &Path) -> AppResult<String> {
     }
     let stem = db_path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "tiqr-manager".into());
     let file: PathBuf = db_path.with_file_name(format!("{stem}.device"));
-    let existing = std::fs::read_to_string(&file).ok().map(|s| s.trim().to_string());
+    let existing = crate::files::read_to_string(&file).ok().map(|s| s.trim().to_string());
     let id = match existing {
         Some(id) if id.len() >= 16 && id.chars().all(|c| c.is_ascii_hexdigit()) => id,
         _ => {
             let id: String = (0..16).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
-            std::fs::write(&file, &id).map_err(|e| AppError::Io(format!("Couldn't save this computer's sync id: {e}")))?;
+            crate::files::write(&file, &id).map_err(|e| AppError::Io(format!("Couldn't save this computer's sync id: {e}")))?;
             id
         }
     };
@@ -2069,7 +2069,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "tiqr-live-merge-{}-{}.sqlite3",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).unwrap().as_nanos()
         ));
         {
             let remote = Connection::open(&path).unwrap();
@@ -2127,7 +2127,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "tiqr-live-restore-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).unwrap().as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let copy = dir.join("copy.sqlite3");
