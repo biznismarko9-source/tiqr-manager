@@ -27,7 +27,7 @@ type Mode = "login" | "register" | "forgot";
 // leave it). See lib/auth.tsx's requestPasswordReset and
 // pages/ResetPassword.tsx for the rest of the flow this kicks off.
 export default function Welcome() {
-  const { user, loading, login, register, loginWithGoogle, requestPasswordReset } = useAuth();
+  const { user, loading, login, register, loginWithGoogle, signInError, requestPasswordReset } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
   const [mode, setMode] = useState<Mode>("login");
@@ -60,6 +60,13 @@ export default function Welcome() {
       .then(setGoogleAvailable)
       .catch(() => setGoogleAvailable(false));
   }, []);
+
+  // 2.117.0: back from Google's page in a browser, refused.
+  useEffect(() => {
+    if (!signInError) return;
+    const hasFirebaseCode = typeof signInError === "object" && "code" in signInError;
+    toast.error(hasFirebaseCode ? firebaseAuthErrorMessage(signInError) : errMsg(signInError));
+  }, [signInError, toast]);
 
   // Still restoring a persisted Firebase session - see lib/auth.tsx's own
   // doc comment. Render nothing rather than flashing this form first.

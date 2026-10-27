@@ -23,6 +23,9 @@
 //! * **Off until switched on**, per computer, in a file beside the data
 //!   (`web-access.json`) - not in the database, so no backup, merge or sync
 //!   carries it to another computer.
+//!
+//! One thing more is served without a token, because it comes before one:
+//! Firebase's Google sign-in pages (`sign_in_routes`).
 use crate::diag::{self, Severity};
 use crate::error::{AppError, AppResult};
 use axum::body::Bytes;
@@ -66,6 +69,14 @@ const FORWARDED_EVENTS: &[&str] = &["mail-sync"];
 /// Unknown key ids are looked up at most this often, so a stream of made-up
 /// tokens cannot turn into a stream of requests to Google.
 const KEY_REFETCH_GAP: Duration = Duration::from_secs(60);
+
+/// Where Firebase keeps this project's sign-in pages (`sign_in_routes`).
+const FIREBASE_PAGES: &str = "https://tiqr-manager-b890a.firebaseapp.com";
+/// A sign-in form is small; nothing bigger comes that way.
+const MAX_SIGN_IN_BODY: usize = 64 * 1024;
+const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(20);
+const SIGN_IN_UNREACHABLE: &str =
+    "Google sign-in could not be reached from TIQR on the server. Go back to TIQR and try again in a moment.";
 
 /// What a browser may load and talk to. The screens are TIQR's own files;
 /// sign-in and Firestore are Google's (apis.google.com is Firebase's loader
@@ -231,14 +242,115 @@ impl<R: Runtime> Clone for Shared<R> {
 }
 
 fn router<R: Runtime>(app: AppHandle<R>, events: broadcast::Sender<(String, String)>) -> Router {
-    Router::new()
+    routes(app, events, FIREBASE_PAGES.to_string())
+}
+
+/// `sign_in_pages`: Firebase's host, or a stand-in for it in the tests.
+fn routes<R: Runtime>(app: AppHandle<R>, events: broadcast::Sender<(String, String)>, sign_in_pages: String) -> Router {
+    let screens = Router::new()
         .route("/api/health", get(health))
         .route("/api/invoke", post(invoke::<R>))
         .route("/api/events", get(events_stream::<R>))
         .fallback(asset)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(axum::middleware::map_response(protect))
-        .with_state(Shared { app, events })
+        .with_state(Shared { app, events });
+    sign_in_routes(sign_in_pages).merge(screens)
+}
+
+/// Firebase's Google sign-in pages (`/__/auth/...`, `/__/firebase/...`),
+/// fetched from Firebase and handed over as this address's own.
+///
+/// Google's sign-in page hands back to the address it was opened from. From
+/// firebaseapp.com, a browser that keeps each site's storage to itself -
+/// Safari, and an iPhone's home-screen app above all - comes back to TIQR
+/// without the sign-in. From here it is all one site: Firebase's own advice
+/// for exactly this ("proxy auth requests to firebaseapp.com"), and
+/// src/lib/firebase.ts sends sign-in here.
+///
+/// Only these two folders, only to Firebase's host, and only what a page
+/// needs goes out: no cookies (this address's cookies are Cloudflare
+/// Access's), and none come back. These answers keep Firebase's own rules,
+/// not `protect`'s: TIQR's page has to frame Firebase's sign-in frame, and
+/// the scripts on these pages are Firebase's.
+fn sign_in_routes(pages: String) -> Router {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(SIGN_IN_TIMEOUT)
+        .build()
+        .unwrap_or_default();
+    Router::new()
+        .route("/__/auth/{*rest}", get(sign_in_page).post(sign_in_page))
+        .route("/__/firebase/{*rest}", get(sign_in_page))
+        .layer(DefaultBodyLimit::max(MAX_SIGN_IN_BODY))
+        .with_state(SignIn { pages, client })
+}
+
+#[derive(Clone)]
+struct SignIn {
+    pages: String,
+    client: reqwest::Client,
+}
+
+async fn sign_in_page(
+    State(sign_in): State<SignIn>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let path = uri.path();
+    if path.split('/').any(|part| part == "..") || path.contains("//") {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let target = uri.path_and_query().map_or(path, |p| p.as_str());
+    let mut request = sign_in.client.request(method, format!("{}{target}", sign_in.pages));
+    for name in [
+        header::ACCEPT,
+        header::ACCEPT_LANGUAGE,
+        header::CONTENT_TYPE,
+        header::USER_AGENT,
+        header::IF_NONE_MATCH,
+        header::IF_MODIFIED_SINCE,
+    ] {
+        if let Some(value) = headers.get(&name) {
+            request = request.header(name, value.clone());
+        }
+    }
+    if !body.is_empty() {
+        request = request.body(body);
+    }
+    // A page the person is looking at, so words rather than JSON.
+    let unreachable = || {
+        (
+            StatusCode::BAD_GATEWAY,
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            SIGN_IN_UNREACHABLE,
+        )
+            .into_response()
+    };
+    let Ok(answer) = request.send().await else {
+        return unreachable();
+    };
+    let mut response = Response::builder().status(answer.status());
+    for name in [
+        header::CONTENT_TYPE,
+        header::CACHE_CONTROL,
+        header::ETAG,
+        header::LAST_MODIFIED,
+        header::EXPIRES,
+        header::LOCATION,
+        header::VARY,
+        header::CONTENT_LANGUAGE,
+    ] {
+        if let Some(value) = answer.headers().get(&name) {
+            response = response.header(name, value.clone());
+        }
+    }
+    let Ok(bytes) = answer.bytes().await else {
+        return unreachable();
+    };
+    response.body(axum::body::Body::from(bytes)).unwrap_or_else(|_| unreachable())
 }
 
 /// One hub per app: the window's events, copied for every browser listening.
@@ -989,5 +1101,110 @@ mod tests {
         assert_eq!(client.post(format!("{base}/")).send().unwrap().status(), 405);
 
         stop();
+    }
+
+    fn serve(router: Router) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        tauri::async_runtime::spawn(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            let _ = axum::serve(listener, router).await;
+        });
+        port
+    }
+
+    /// Firebase's sign-in pages come through this address: what a page needs
+    /// goes out, this address's cookies do not, Firebase's answer comes back
+    /// without its cookies - and without TIQR's page rules, which stay on
+    /// TIQR's own pages.
+    #[test]
+    fn firebase_sign_in_pages_come_through_this_address() {
+        use std::sync::Arc;
+        let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+        let log = seen.clone();
+        // A stand-in for firebaseapp.com.
+        let firebase = Router::new().fallback(move |method: Method, uri: Uri, headers: HeaderMap, body: Bytes| {
+            let log = log.clone();
+            async move {
+                let sent = |name: header::HeaderName| headers.get(name).map(|v| v.to_str().unwrap().to_string());
+                log.lock().unwrap().push(format!(
+                    "{method} {uri} cookie={:?} type={:?} body={}",
+                    sent(header::COOKIE),
+                    sent(header::CONTENT_TYPE),
+                    String::from_utf8_lossy(&body)
+                ));
+                (
+                    [
+                        (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                        (header::SET_COOKIE, "firebase=1"),
+                        (header::CACHE_CONTROL, "no-cache"),
+                    ],
+                    "<html>handler</html>",
+                )
+            }
+        });
+        let firebase_port = serve(firebase);
+        let app = mock_app();
+        let hub = event_hub(app.handle());
+        let port = serve(routes(app.handle().clone(), hub, format!("http://127.0.0.1:{firebase_port}")));
+        let base = format!("http://127.0.0.1:{port}");
+        let client = reqwest::blocking::Client::new();
+
+        // Google's way back, with the query exactly as it came.
+        let back = "/__/auth/handler?state=abc&code=4/0Ab&scope=email+https://www.googleapis.com/auth/userinfo.email";
+        let page = client.get(format!("{base}{back}")).header(header::COOKIE, "CF_Authorization=secret").send().unwrap();
+        assert_eq!(page.status(), 200);
+        assert_eq!(page.headers()["content-type"], "text/html; charset=utf-8");
+        assert_eq!(page.headers()["cache-control"], "no-cache");
+        assert!(page.headers().get(header::SET_COOKIE).is_none(), "no cookies come back");
+        assert!(page.headers().get("content-security-policy").is_none(), "Firebase's page, Firebase's rules");
+        assert!(page.headers().get("x-frame-options").is_none(), "TIQR's page frames Firebase's frame");
+        assert_eq!(page.text().unwrap(), "<html>handler</html>");
+
+        let form = client
+            .post(format!("{base}/__/auth/handler"))
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body("state=abc")
+            .send()
+            .unwrap();
+        assert_eq!(form.status(), 200);
+        assert_eq!(client.get(format!("{base}/__/firebase/init.json")).send().unwrap().status(), 200);
+        assert_eq!(client.post(format!("{base}/__/firebase/init.json")).send().unwrap().status(), 405);
+
+        // A path that climbs out of the folder is not passed on. (reqwest
+        // would tidy the path, so this one goes out as raw HTTP.)
+        {
+            use std::io::{Read, Write};
+            let mut raw = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            raw.write_all(b"GET /__/auth/../../api/health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").unwrap();
+            let mut answer = String::new();
+            raw.read_to_string(&mut answer).unwrap();
+            assert!(answer.starts_with("HTTP/1.1 400"), "{answer}");
+        }
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                format!("GET {back} cookie=None type=None body="),
+                "POST /__/auth/handler cookie=None type=Some(\"application/x-www-form-urlencoded\") body=state=abc"
+                    .to_string(),
+                "GET /__/firebase/init.json cookie=None type=None body=".to_string(),
+            ]
+        );
+
+        // TIQR's own pages keep their rules.
+        let health = client.get(format!("{base}/api/health")).send().unwrap();
+        assert_eq!(health.headers()["content-security-policy"], CSP);
+        assert_eq!(client.get(format!("{base}/sales")).send().unwrap().headers()["x-frame-options"], "DENY");
+    }
+
+    #[test]
+    fn firebase_out_of_reach_is_said_plainly() {
+        // Nothing listens on port 9 here.
+        let port = serve(sign_in_routes("http://127.0.0.1:9".to_string()));
+        let answer = reqwest::blocking::get(format!("http://127.0.0.1:{port}/__/auth/iframe")).unwrap();
+        assert_eq!(answer.status(), 502);
+        assert_eq!(answer.text().unwrap(), SIGN_IN_UNREACHABLE);
     }
 }
