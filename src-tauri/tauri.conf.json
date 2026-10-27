@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "TIQR Manager",
-  "version": "2.116.0",
+  "version": "2.117.0",
   "identifier": "com.tiqrmanager.app",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build && npm run build:web",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },

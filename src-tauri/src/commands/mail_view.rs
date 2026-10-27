@@ -728,14 +728,6 @@ pub(crate) fn is_public_ip(ip: IpAddr) -> bool {
 /// One picture from the web: checked address, no redirect it did not check,
 /// at most `MAX_IMAGE_BYTES`, and a picture by its bytes.
 fn fetch_remote_image(url: &str) -> Result<Vec<u8>, String> {
-    fetch_picture(url, PICTURE_AGENT, MAX_IMAGE_BYTES)
-}
-
-/// `fetch_remote_image` with the caller's own name and size limit. 2.116.0:
-/// event pictures (commands/event_artwork.rs) come through the same checks -
-/// public address only, every redirect checked, a picture by its bytes - but
-/// introduce themselves honestly, as picture services ask.
-pub(crate) fn fetch_picture(url: &str, agent: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
     let mut current = url.to_string();
     for _ in 0..4 {
         let parsed = reqwest::Url::parse(&current).map_err(|_| "not a web address".to_string())?;
@@ -764,7 +756,7 @@ pub(crate) fn fetch_picture(url: &str, agent: &str, max_bytes: usize) -> Result<
             .connect_timeout(Duration::from_secs(5))
             .redirect(reqwest::redirect::Policy::none())
             .resolve_to_addrs(&host, &addrs)
-            .user_agent(agent)
+            .user_agent(PICTURE_AGENT)
             .default_headers(headers)
             .build()
             .map_err(|e| e.to_string())?;
@@ -783,8 +775,8 @@ pub(crate) fn fetch_picture(url: &str, agent: &str, max_bytes: usize) -> Result<
             return Err(format!("answered {}", status.as_u16()));
         }
         let mut bytes = Vec::new();
-        resp.take(max_bytes as u64 + 1).read_to_end(&mut bytes).map_err(|_| "cut off".to_string())?;
-        if bytes.len() > max_bytes {
+        resp.take(MAX_IMAGE_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|_| "cut off".to_string())?;
+        if bytes.len() > MAX_IMAGE_BYTES {
             return Err("too big".to_string());
         }
         if sniff_image(&bytes).is_none() {

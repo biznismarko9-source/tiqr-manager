@@ -27,20 +27,20 @@ test("nothing that could open an account or identify a person survives redaction
 test("a failure is kept with when, where, how bad and an id - and a repeat is counted, not repeated", () => {
   clearDiagnostics();
   const t0 = new Date("2026-10-24T12:00:00Z");
-  const a = reportError("artwork map", new Error("database is locked"), { now: t0 });
+  const a = reportError("sales list", new Error("database is locked"), { now: t0 });
   assert.match(a.id, /^E-[2-9A-Z]{4}$/);
   assert.equal(a.severity, "error");
-  const again = reportError("artwork map", new Error("database is locked"), { now: new Date(t0.getTime() + 5_000) });
+  const again = reportError("sales list", new Error("database is locked"), { now: new Date(t0.getTime() + 5_000) });
   assert.equal(again, a);
   assert.equal(a.count, 2);
   // A minute later it is news again.
-  reportError("artwork map", new Error("database is locked"), { now: new Date(t0.getTime() + 61_000) });
+  reportError("sales list", new Error("database is locked"), { now: new Date(t0.getTime() + 61_000) });
   reportError("page Events", "boom", { severity: "fatal", now: t0 });
   const kept = diagnostics();
   assert.equal(kept.length, 3);
   assert.equal(kept[2].severity, "fatal");
   const text = diagnosticsText();
-  assert.match(text, /ERROR \[E-[2-9A-Z]{4}\] artwork map: database is locked \(x2\)/);
+  assert.match(text, /ERROR \[E-[2-9A-Z]{4}\] sales list: database is locked \(x2\)/);
 });
 
 test("a failure carrying a secret is kept without it", () => {

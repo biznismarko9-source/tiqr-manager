@@ -1,11 +1,12 @@
 {
   "name": "tiqr-manager",
   "private": true,
-  "version": "2.116.0",
+  "version": "2.117.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:web": "vite build --mode web",
     "test": "node --test \"src/**/*.test.ts\"",
     "preview": "vite preview",
     "tauri": "tauri"

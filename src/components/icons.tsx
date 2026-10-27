@@ -353,11 +353,9 @@ export const IconEyeOff = (p: SVGProps<SVGSVGElement>) => (
     <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20" />
   </Svg>
 );
-/** 2.116.0: the placeholder of an event without a picture. */
-export const IconImage = (p: SVGProps<SVGSVGElement>) => (
+/** 2.117.0: "More" in the phone's tab bar (Layout.tsx). */
+export const IconMenu = (p: SVGProps<SVGSVGElement>) => (
   <Svg {...p}>
-    <rect x="3" y="3" width="18" height="18" rx="3" />
-    <circle cx="9" cy="9" r="1.75" />
-    <path d="m21 15-4.5-4.5L6 21" />
+    <path d="M4 6h16M4 12h16M4 18h16" />
   </Svg>
 );

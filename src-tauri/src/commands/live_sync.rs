@@ -87,6 +87,12 @@ fn table(name: &str) -> Option<&'static MergeTable> {
     MERGE_TABLES.iter().find(|t| t.name == name)
 }
 
+/// Tables an earlier version sent and this one no longer keeps. A computer
+/// not yet updated still sends them for a while; what arrives is set aside
+/// quietly instead of being counted as a conflict on every page. 2.116.1:
+/// the event pictures (migration 048).
+const RETIRED_TABLES: &[&str] = &["event_artworks"];
+
 fn rank(name: &str) -> usize {
     MERGE_TABLES.iter().position(|t| t.name == name).unwrap_or(MERGE_TABLES.len())
 }
@@ -707,6 +713,9 @@ fn apply_delete(conn: &Connection, t: &MergeTable, doc: &SyncDoc) -> AppResult<A
 }
 
 fn apply_doc(conn: &Connection, doc: &SyncDoc, me: &str) -> AppResult<Applied> {
+    if RETIRED_TABLES.contains(&doc.t.as_str()) {
+        return Ok(Applied::Unchanged);
+    }
     let Some(t) = table(&doc.t) else {
         return Ok(Applied::Conflict(format!("{}: not a table this version syncs", doc.t)));
     };
@@ -1606,67 +1615,30 @@ mod tests {
         assert_eq!(a_uid, b_uid, "one record, one identity on both computers");
     }
 
-    /// 2.116.0: a picture chosen by hand on one computer shows on the other,
-    /// under the same uid - derived from the subject, so two computers that
-    /// both chose one meet in one record - and the newer of two choices made
-    /// apart wins on both. What a picture service answered never travels.
+    /// 2.116.1: a computer still on 2.116.0 keeps sending the pictures
+    /// chosen there. They are set aside here - not stored, not a conflict -
+    /// and nothing about them is ever sent from here.
     #[test]
-    fn a_picture_chosen_by_hand_travels_and_the_newer_choice_wins() {
-        use crate::commands::event_artwork::{artwork_uid, decide, DecideInput};
-        use base64::Engine;
-        const PNG: &[u8] = &[
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00,
-            0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00,
-            0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D,
-            0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
-        ];
-        let png = |tail: u8| {
-            let mut bytes = PNG.to_vec();
-            bytes.push(tail);
-            format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))
+    fn a_picture_sent_by_a_computer_not_yet_updated_is_set_aside_quietly() {
+        let a = Computer::new(A, "");
+        let picture = SyncDoc {
+            id: doc_id("event_artworks", "art-1"),
+            t: "event_artworks".into(),
+            u: "art-1".into(),
+            h: 1,
+            del: false,
+            d: serde_json::from_str(r#"{"identity_key": "name:coldplay", "state": "set", "image": "data:image/png;base64,AAAA"}"#)
+                .unwrap(),
+            dev: B.into(),
         };
-        let choice = |state: &str, image: Option<String>| DecideInput {
-            key: "name:coldplay".into(),
-            label: "Coldplay".into(),
-            query_key: "artist:coldplay".into(),
-            state: state.into(),
-            image,
-            fit: None,
-            source: Some("upload".into()),
-            source_id: None,
-            source_title: None,
-            source_page: None,
-            image_url: None,
-            confidence: None,
-        };
-        let mut cloud = Cloud::default();
-        let mut a = Computer::new(A, "");
-        let mut b = Computer::new(B, "");
-        a.exec("INSERT INTO events (name) VALUES ('Coldplay')");
-        settle(&mut a, &mut b, &mut cloud);
-
-        decide(&a.conn, &choice("set", Some(png(1)))).unwrap();
-        a.exec(
-            "INSERT INTO artwork_lookups (query_key, outcome, checked_at) VALUES ('any:coldplay', 'none', '2026-10-24T12:00:00.000Z')",
-        );
-        settle(&mut a, &mut b, &mut cloud);
-        assert_eq!(b.one::<String>("SELECT uid FROM event_artworks"), artwork_uid("name:coldplay"));
-        assert_eq!(b.one::<String>("SELECT image FROM event_artworks"), png(1));
-        assert_eq!(b.one::<i64>("SELECT COUNT(*) FROM artwork_lookups"), 0, "a service's answer stays where it was asked");
-
-        // Apart: A says "no picture", B later picks another one.
-        decide(&a.conn, &choice("none", None)).unwrap();
-        b.later(60_000);
-        decide(&b.conn, &choice("set", Some(png(2)))).unwrap();
-        a.push(&mut cloud);
-        b.push(&mut cloud);
-        settle(&mut a, &mut b, &mut cloud);
-        for c in [&a, &b] {
-            assert_eq!(c.one::<String>("SELECT state FROM event_artworks"), "set");
-            assert_eq!(c.one::<String>("SELECT image FROM event_artworks"), png(2));
-            assert_eq!(c.one::<i64>("SELECT COUNT(*) FROM event_artworks"), 1);
-        }
-        assert_eq!(picture(&a), picture(&b));
+        let gone = SyncDoc { id: doc_id("event_artworks", "art-2"), u: "art-2".into(), del: true, ..picture.clone() };
+        let out = apply(&a.conn, &[picture, gone], A).unwrap();
+        assert_eq!(out.conflicts, 0, "{:?}", out.reasons);
+        assert_eq!(out.applied, 0);
+        assert_eq!(out.unchanged, 2);
+        assert_eq!(a.one::<i64>("SELECT COUNT(*) FROM event_artworks"), 0);
+        assert_eq!(a.one::<i64>("SELECT COUNT(*) FROM sync_pending"), 0);
+        assert_eq!(a.one::<i64>("SELECT COUNT(*) FROM sync_outbox WHERE table_name = 'event_artworks'"), 0);
     }
 
     #[test]

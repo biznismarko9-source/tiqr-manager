@@ -21,31 +21,63 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
-## 2.116.0 - event pictures, diagnostics, atomic migrations
+## 2.117.0 - Web access (src-tauri/src/web_access.rs, src/web/)
 
-- **`event_artworks` rows are never DELETEd.** The uid is derived from the
-  subject key (`artwork_uid`), and a deleted uid can never come back
-  (migration 028: a deletion wins over any later edit) - "back to
-  automatic" is `state = 'auto'`. Anything that cleans the table up must
-  update, never delete. The derivation itself (`event_artworks\0` + key,
-  SHA-256, first 16 bytes) must never change, or two computers stop
-  meeting in one record.
-- **`artwork_lookups` must never go into MERGE_TABLES.** It holds what the
-  services answered and the automatic pick; kept local, a late or wrong
-  automatic answer can never arrive on the other computer and replace a
-  picture chosen there by hand. It is also bookkeeping in
-  `db::is_bookkeeping_table` (an answer is not marko's change).
-- **The subject key does not depend on the category** (`subject_for`):
-  changing a category must never orphan a choice. Only the SEARCH depends
-  on it. A change to the name folding (`norm`) re-keys every subject - treat
-  it like a migration.
+- **127.0.0.1 only.** The internet reaches it through a tunnel on the same
+  computer. Never bind another address, and never make a request through
+  without a token: only `/api/health`, the web screens and Firebase's
+  sign-in pages are answered without one.
+- **A token is the open account or nothing.** `verify_token` checks RS256,
+  Google's key, aud/iss, expiry and issue time, then `sub` against
+  `note_signed_in` - set only by `switch_active_database`. A browser's
+  `switch_active_database` for another uid is refused, so a valid sign-in of
+  someone else can never open their database on the server.
+- **A command that writes a file, opens a window or runs the window's own
+  loops goes into `BLOCKED`**, with its reason. The test
+  `every_refused_command_is_a_command_this_app_has` catches a renamed one;
+  nothing catches a NEW one that should be refused - add it when adding the
+  command.
+- **The sign-in pass-through stays this narrow**: `/__/auth/` and
+  `/__/firebase/` only, Firebase's own host only, no cookies either way
+  (this address's cookies are Cloudflare Access's), a header allowlist each
+  way, and no `protect` headers on those answers (TIQR's page frames
+  Firebase's iframe, so `X-Frame-Options: DENY` there breaks sign-in).
+- **Browser tabs never run the server's loops**: live sync, mail share and
+  the mail reader start only where `IS_WEB` is false. Two tabs running them
+  beside the server's window would send every change twice and fight over
+  the mail lease.
+- **The CSP** (`web_access::CSP`) allows apis.google.com scripts and the
+  firebaseapp.com frame for Firebase Auth; a change to the sign-in needs a
+  check in a real browser, not just the tests.
+- **The phone layout is below `md` only.** The desktop window cannot get
+  that narrow (1080 px minimum), and the phone block in `index.css` (the
+  848 px table minimum, the two-column figures, the sideways rows) must stay
+  inside its media query so the desktop app does not change.
+
+## 2.116.1 - event pictures removed
+
+- **Migration 047 stays registered in `db.rs`**, before 048. A file that
+  already ran it must keep finding it there; 048 is what takes the pictures
+  out (drops `artwork_lookups`, empties `event_artworks`, clears its live
+  sync bookkeeping and the `event_artwork_auto` setting).
+- **`event_artworks` stays as an empty table** until no computer runs
+  2.116.0. A 2.116.0 Drive merge walks its own MERGE_TABLES, and
+  `merge_one_table` stops the whole merge on a table the copy does not have
+  ("has no uid on one of the two machines"). Dropping it later is a new
+  migration of its own.
+- **048 drops the table's triggers before it empties it**, so emptying
+  leaves no tombstones and queues nothing for live sync: this computer's
+  pictures go, and the other computer's go when it runs 048 itself.
+- **`live_sync::RETIRED_TABLES`**: a document for a table this version no
+  longer keeps is set aside as unchanged, not counted as a conflict. A table
+  taken out of MERGE_TABLES while an older version may still send it goes
+  there too.
+
+## 2.116.0 - diagnostics, atomic migrations (its event pictures: see 2.116.1)
+
 - **No network under the database lock, and none on the window's thread**
-  (`suggest_with`, `backfill_with`, `detect_event_categories`): read, let
-  go, ask, then lock again to write - and write only what is still true
-  (`category_id IS NULL`, a failure never replacing a certain answer).
-- **Table rows keep their height.** The picture sizes carry negative
-  vertical margins (`EventArt` `row`, and `-my-0.5` / `-my-1` in Events and
-  Sales); measured before and after: Events 48, Inventory 32, Sales 46 px.
+  (`detect_event_categories`): read, let go, ask, then lock again to write -
+  and write only what is still true (`category_id IS NULL`).
 - **`db::apply_migrations` wraps each migration with its record in one
   transaction** - except a migration holding its own `BEGIN TRANSACTION`
   (004, 017, 020, 027-030), because SQLite has no nested BEGIN. A new

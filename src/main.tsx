@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./index.css";
 import { installDiagnostics } from "./lib/diagnosticsSink";
+import { IS_WEB } from "./lib/platform";
 
 // 2.116.0: from the very first moment, every failure is kept - including
 // the ones nothing on the screen catches (lib/diagnosticsSink.ts).
@@ -16,7 +17,9 @@ installDiagnostics();
 // covers every page/component without touching any of them individually -
 // there is no Tauri config flag for this (as of Tauri 2, the context menu is
 // suppressed from the web content side, not the window/webview config side).
-document.addEventListener("contextmenu", (e) => e.preventDefault());
+// 2.117.0: a browser keeps its own menu - copying a link or text on a
+// phone needs it.
+if (!IS_WEB) document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

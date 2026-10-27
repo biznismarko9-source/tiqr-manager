@@ -23,6 +23,7 @@
 // to, or by dragging it onto a folder in the rail, including marko's own folders
 // ("aby som vedel dane maily presunut tak kde chcem do ineho miesta").
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api, errMsg } from "../lib/api";
 import { copyText } from "../lib/clipboard";
 import { lastMailSync, onMailSynced, requestMailSync } from "../lib/mailSync";
@@ -39,8 +40,18 @@ import {
   type MailMute,
   type MailSyncResult,
 } from "../lib/types";
-import { Badge, Button, Card, ConfirmDialog, EmptyState, Input, PageHeader, Spinner } from "../components/ui";
-import { IconBellOff, IconFolder, IconMail, IconPaperclip, IconPencil, IconPlus, IconStar, IconTrash } from "../components/icons";
+import { Badge, Button, Card, ConfirmDialog, EmptyState, Input, PageHeader, Select, Spinner } from "../components/ui";
+import {
+  IconBellOff,
+  IconChevronLeft,
+  IconFolder,
+  IconMail,
+  IconPaperclip,
+  IconPencil,
+  IconPlus,
+  IconStar,
+  IconTrash,
+} from "../components/icons";
 import { muteKind, muteState, type MuteKind } from "../lib/mailMute";
 import { MailSettingsPane } from "../components/MailSettingsPane";
 import { PromoCleanup } from "../components/PromoCleanup";
@@ -54,6 +65,7 @@ import {
 } from "../components/MailReader";
 import { useToast } from "../lib/toast";
 import { useFillHeight, useRemeasure } from "../lib/useFillHeight";
+import { usePhone } from "../lib/usePhone";
 
 /** Folders this app defines itself, above Gmail's own. */
 type Builtin =
@@ -110,6 +122,9 @@ function formatWhen(iso: string) {
 }
 
 const fmt = (n: number) => n.toLocaleString();
+
+/** 2.117.0: a place in the phone's folder list - "Inbox (12)" while it has unread mail. */
+const withUnread = (label: string, unread: number) => (unread > 0 ? `${label} (${fmt(unread)})` : label);
 
 /** How a lane's state reads in the sync status line. */
 const LANE_TONE: Record<LaneTone, string> = {
@@ -907,8 +922,12 @@ export default function MailIntelligence() {
   };
 
   // 2.113.0: the panes reach the bottom of the window (lib/useFillHeight.ts).
+  /* 2.117.0: on a phone one pane at a time - the folder to pick above the
+     list, and an open message over the whole screen until "back". */
+  const phone = usePhone();
+  const panesMin = phone ? 300 : 440;
   const panesRef = useRef<HTMLDivElement>(null);
-  const panesHeight = useFillHeight(panesRef);
+  const panesHeight = useFillHeight(panesRef, 20, panesMin);
   /* 2.115.0, marko: "ked je mail vacsi tak si vies potiahnut posuvnikom aby
      sa zvacsila ta cast kde je mail". The edge between the list and the
      message is a handle: dragged left, the message gets the room. Kept per
@@ -1093,12 +1112,48 @@ export default function MailIntelligence() {
 
       <div
         ref={panesRef}
-        className="flex gap-4"
-        style={{ height: panesHeight ? `${panesHeight}px` : "calc(100vh - 168px)", minHeight: "440px" }}
+        className={phone ? "flex flex-col gap-2" : "flex gap-4"}
+        style={{ height: panesHeight ? `${panesHeight}px` : "calc(100vh - 168px)", minHeight: `${panesMin}px` }}
       >
         {/* Folders - TIQR's own in marko's order, then the Gmail labels, then
             marko's own folders. Only the list scrolls; Settings sits BELOW it.
             Mail can be dropped on any place it can be moved to. */}
+        {phone ? (
+          // 2.117.0: the same places, picked from a list. New, renamed and
+          // deleted folders stay on a computer.
+          <div className="shrink-0">
+            <Select aria-label="Folder" value={folder} onChange={(e) => pick(e.target.value)}>
+              {BUILTIN_FOLDERS.map((f) => {
+                const c = counts[f.key];
+                if (f.onlyWhenUsed && !(c?.total ?? 0) && mutes.length === 0 && folder !== f.key) return null;
+                return (
+                  <option key={f.key} value={f.key}>
+                    {withUnread(f.label, c?.unread ?? 0)}
+                  </option>
+                );
+              })}
+              {userLabels.length > 0 && (
+                <optgroup label="Your labels">
+                  {userLabels.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {withUnread(l.name, counts[l.id]?.unread ?? l.unread)}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {localFolders.length > 0 && (
+                <optgroup label="Your folders">
+                  {localFolders.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {withUnread(f.name, counts[f.id]?.unread ?? 0)}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              <option value={SETTINGS_FOLDER}>Settings</option>
+            </Select>
+          </div>
+        ) : (
         <Card className="flex w-[200px] shrink-0 flex-col overflow-hidden p-2">
           <div className="min-h-0 flex-1 overflow-y-auto">
             {BUILTIN_FOLDERS.map((f) => {
@@ -1211,12 +1266,16 @@ export default function MailIntelligence() {
             />
           </div>
         </Card>
+        )}
 
         {folder === SETTINGS_FOLDER ? (
           <MailSettingsPane status={status} onStatus={setStatus} localFolders={localFolders} labels={userLabels} />
         ) : (
           <>
-            <Card className="flex shrink flex-col overflow-hidden p-0" style={{ width: listWidth, minWidth: LIST_MIN }}>
+            <Card
+              className={phone ? "flex min-h-0 flex-1 flex-col overflow-hidden p-0" : "flex shrink flex-col overflow-hidden p-0"}
+              style={phone ? undefined : { width: listWidth, minWidth: LIST_MIN }}
+            >
               {/* 2.114.0: "80% z toho su shits" - sorted on a click, moved only
                   when marko says so (components/PromoCleanup.tsx). */}
               {folder === "promotions" && !query && (
@@ -1416,6 +1475,7 @@ export default function MailIntelligence() {
             {/* The handle: dragged, or the arrow keys once it has focus;
                 a double click puts it back. It sits in the gap, so the gap
                 looks as before. */}
+            {!phone && (
             <div
               role="separator"
               aria-orientation="vertical"
@@ -1442,8 +1502,40 @@ export default function MailIntelligence() {
                 }`}
               />
             </div>
+            )}
             {/* While dragging, the message's own frame must not catch the mouse. */}
             {resizing && <div className="fixed inset-0 z-50 cursor-col-resize" />}
+            {phone ? (
+              // 2.117.0: the whole screen, tab bar included, over the list -
+              // which keeps its place underneath for "back". Dialogs the
+              // message opens (z-50 and up) still come in front of it.
+              open &&
+              createPortal(
+                <div className="fixed inset-0 z-[45] flex flex-col bg-surface pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]">
+                  <button
+                    type="button"
+                    onClick={() => setOpenId(null)}
+                    className="flex shrink-0 items-center gap-1 border-b border-slate-200 px-3 py-3 text-left text-sm font-medium text-brand-600 dark:border-slate-800 dark:text-brand-400"
+                  >
+                    <IconChevronLeft className="h-4 w-4" />
+                    {placeName(folder) ?? "Messages"}
+                  </button>
+                  <MailReader
+                    message={open}
+                    status={status}
+                    places={places}
+                    placeName={placeName}
+                    mutes={mutes}
+                    onMove={(ids, t) => void moveIds(ids, t)}
+                    onTrash={(ids, restore) => void bulk(restore ? "restore" : "trash", ids)}
+                    onMute={(kind, who, days) => void mute(kind, who, days)}
+                    onUnmute={(kind, who) => void unmute(kind, who)}
+                    onChanged={onReaderChanged}
+                  />
+                </div>,
+                document.body,
+              )
+            ) : (
             <Card className="flex min-w-0 flex-1 flex-col overflow-hidden p-0" style={{ minWidth: READER_MIN }}>
               {open ? (
                 <MailReader
@@ -1472,6 +1564,7 @@ export default function MailIntelligence() {
                 </div>
               )}
             </Card>
+            )}
           </>
         )}
       </div>

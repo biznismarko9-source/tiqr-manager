@@ -1,6 +1,6 @@
 [package]
 name = "tiqr-manager"
-version = "2.116.0"
+version = "2.117.0"
 description = "TIQR Manager - local-first ticket reselling manager"
 authors = ["TIQR"]
 edition = "2021"
@@ -103,6 +103,17 @@ sha2 = "0.10"
 # commands/mail_view.rs.
 ammonia = "4"
 encoding_rs = "0.8"
+# 2.117.0: Web access (web_access.rs) - this TIQR's screens in a browser,
+# served on 127.0.0.1 only. hyper, tokio and futures-util were already in the
+# build through reqwest and Tauri; axum is the small router on top of them.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
+tokio = { version = "1", features = ["net", "sync", "time", "rt"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# 2.117.0: Tauri's mock runtime - web_access.rs's tests hand a command to a
+# window the same way a browser request does, without a real window.
+tauri = { version = "2", features = ["test"] }
 
 [profile.release]
 panic = "abort"

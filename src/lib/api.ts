@@ -1,12 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  ArtworkBackfillReport,
-  ArtworkDecideInput,
-  ArtworkImage,
-  ArtworkOptions,
-  ArtworkRef,
-  ArtworkSuggestInput,
-  ArtworkSuggestion,
   DataCheck,
   Note,
   NoteBlock,
@@ -158,6 +151,8 @@ import type {
   ShareProgress,
   PromoScan,
   PromoSuggestion,
+  WebAccessOptions,
+  WebAccessStatus,
 } from "./types";
 
 export const api = {
@@ -179,14 +174,6 @@ export const api = {
   takeCrashReport: () => invoke<string | null>("take_crash_report"),
   exportDiagnostics: () => invoke<string>("export_diagnostics"),
   saveDiagnostics: (path: string) => invoke<void>("save_diagnostics", { path }),
-  // 2.116.0: a picture for every event (commands/event_artwork.rs).
-  eventArtworkMap: () => invoke<ArtworkRef[]>("event_artwork_map"),
-  eventArtworkImages: (keys: string[]) => invoke<ArtworkImage[]>("event_artwork_images", { keys }),
-  eventArtworkSuggest: (input: ArtworkSuggestInput) => invoke<ArtworkSuggestion>("event_artwork_suggest", { input }),
-  eventArtworkDecide: (input: ArtworkDecideInput) => invoke<void>("event_artwork_decide", { input }),
-  eventArtworkBackfill: (max?: number) => invoke<ArtworkBackfillReport>("event_artwork_backfill", { max }),
-  getEventArtworkOptions: () => invoke<ArtworkOptions>("get_event_artwork_options"),
-  setEventArtworkOptions: (options: ArtworkOptions) => invoke<ArtworkOptions>("set_event_artwork_options", { options }),
 
   // AI Import Assistant (2.7.0)
   /** The ONLY AI-import call in the app. Analyzes one user-provided image and
@@ -548,6 +535,10 @@ export const api = {
 
   // Misc
   getAppInfo: () => invoke<AppInfo>("get_app_info"),
+  // 2.117.0: Web access - this TIQR's screens in a browser (web_access.rs).
+  getWebAccessStatus: () => invoke<WebAccessStatus>("get_web_access_status"),
+  setWebAccessOptions: (options: WebAccessOptions) =>
+    invoke<WebAccessStatus>("set_web_access_options", { options }),
   /** 2.0.72: swaps the live database connection to the given account's file -
    * called once by lib/auth.tsx right after Firebase confirms who's signed in
    * AND that they're approved. `legacy` decides which file: `true` reuses the

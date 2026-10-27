@@ -16,7 +16,11 @@ export function useFillHeight(ref: RefObject<HTMLElement | null>, bottomGap = 20
     const measure = () => {
       const el = ref.current;
       if (!el) return;
-      const next = Math.max(min, Math.floor(window.innerHeight - el.getBoundingClientRect().top - bottomGap));
+      // 2.117.0: on a phone the tab bar covers the bottom of the window
+      // (Layout's PhoneNav); elsewhere it is not shown and has no size.
+      const nav = document.querySelector("[data-phone-nav]")?.getBoundingClientRect();
+      const bottom = nav && nav.height > 0 ? nav.top : window.innerHeight;
+      const next = Math.max(min, Math.floor(bottom - el.getBoundingClientRect().top - bottomGap));
       setHeight((cur) => (cur === next ? cur : next));
     };
     measure();

@@ -297,13 +297,6 @@ pub(crate) fn report(conn: &rusqlite::Connection, dir: Option<&Path>) -> String 
         count(conn, "SELECT COUNT(*) FROM notes"),
     ));
     line(format!(
-        "Event pictures: {} chosen by hand, {} found automatically, {} waiting for a yes, {} failed searches",
-        count(conn, "SELECT COUNT(*) FROM event_artworks WHERE state = 'set'"),
-        count(conn, "SELECT COUNT(*) FROM artwork_lookups WHERE outcome = 'match'"),
-        count(conn, "SELECT COUNT(*) FROM artwork_lookups WHERE outcome = 'ask'"),
-        count(conn, "SELECT COUNT(*) FROM artwork_lookups WHERE outcome = 'failed'"),
-    ));
-    line(format!(
         "Live sync: on since {}, {} waiting to send, {} waiting for their record, last error: {}",
         text(conn, "SELECT seeded_at FROM sync_control WHERE id = 1"),
         count(conn, "SELECT COUNT(*) FROM sync_outbox"),
@@ -490,6 +483,6 @@ mod tests {
         assert!(!r.contains("A very private event name"));
         assert!(!r.contains("marko@example.com"));
         assert!(!r.contains("abcdef123456"));
-        assert!(r.contains("Schema: 47 migrations"));
+        assert!(r.contains("Schema: 48 migrations"));
     }
 }

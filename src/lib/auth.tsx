@@ -3,19 +3,24 @@ import {
   confirmPasswordReset as firebaseConfirmPasswordReset,
   createUserWithEmailAndPassword,
   getAdditionalUserInfo,
+  getRedirectResult,
   GoogleAuthProvider,
   onAuthStateChanged,
   sendPasswordResetEmail,
   signInWithCredential,
+  signInWithPopup,
+  signInWithRedirect,
   signInWithEmailAndPassword,
   signOut,
   updateProfile,
   verifyPasswordResetCode as firebaseVerifyPasswordResetCode,
   type User,
+  type UserCredential,
 } from "firebase/auth";
 import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
-import { auth, db, PASSWORD_RESET_ACTION_CODE_SETTINGS } from "./firebase";
+import { auth, db, PASSWORD_RESET_ACTION_CODE_SETTINGS, SIGN_IN_ON_THIS_SITE } from "./firebase";
 import { api, errMsg } from "./api";
+import { IS_WEB } from "./platform";
 
 // 2.0.45: real Firebase email/password auth - replaces 2.0.44's localStorage
 // placeholder (that version's own doc comment explained why a placeholder
@@ -79,6 +84,9 @@ interface AuthContextValue {
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
+  /** 2.117.0: why a Google sign-in that went to Google's page in a browser
+   *  came back refused, for the sign-in screen to say. */
+  signInError: unknown;
   logout: () => Promise<void>;
   updateName: (name: string) => Promise<void>;
   /** 2.5.2: sends the reset email - see firebase.ts's
@@ -99,6 +107,36 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+/** 2.117.0: set while a Google sign-in that left for Google's page from this
+ *  tab is on its way back. */
+const GOOGLE_PENDING = "tiqr.googleSignInPending";
+
+function readSession(key: string): string | null {
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeSession(key: string, value: string) {
+  try {
+    sessionStorage.setItem(key, value);
+  } catch {
+    // A tab that keeps nothing: Firebase still signs the account in, and a
+    // first-time account is still held for approval by fetchApproved's date
+    // rule.
+  }
+}
+
+function removeSession(key: string) {
+  try {
+    sessionStorage.removeItem(key);
+  } catch {
+    // Nothing kept, nothing to remove.
+  }
+}
 
 function toAuthUser(u: User): AuthUser {
   return {
@@ -259,44 +297,74 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsAdmin(false);
   }, []);
 
+  // What a Google sign-in leads to, whichever way it came.
+  const afterGoogle = useCallback(
+    async (cred: UserCredential): Promise<void> => {
+      // Belt-and-suspenders, same reasoning as register() above: Firebase
+      // normally fires onAuthStateChanged on its own right after this
+      // resolves, but setting eagerly here means the UI never has to wait on
+      // that round trip to show the right name.
+      setUser(toAuthUser(cred.user));
+      // 2.0.71: a first-ever Google sign-in is also a brand-new account - same
+      // gate as register() above. getAdditionalUserInfo is the modular SDK's
+      // own way to tell "just created" apart from "signed in before", no
+      // extra network round trip needed to know which one this is.
+      if (getAdditionalUserInfo(cred)?.isNewUser) {
+        try {
+          await setDoc(doc(db, "users", cred.user.uid), {
+            name: toAuthUser(cred.user).name,
+            email: cred.user.email ?? "",
+            approved: false,
+            createdAt: serverTimestamp(),
+          });
+        } catch {
+          // see register()'s own comment on why this is swallowed on purpose
+        }
+        setApproved(false);
+        setIsAdmin(false);
+      } else {
+        const { approved: isApproved, admin } = await fetchApproved(cred.user);
+        setApproved(isApproved);
+        setIsAdmin(admin);
+        if (isApproved) await switchDatabaseFor(cred.user);
+      }
+    },
+    [switchDatabaseFor],
+  );
+
   const loginWithGoogle = useCallback(async (): Promise<void> => {
+    // 2.117.0: in a browser at TIQR's own address, TIQR's page gives way to
+    // Google's and comes back (the effect below finishes it) - no second
+    // window, which an iPhone's home-screen app cannot open.
+    if (SIGN_IN_ON_THIS_SITE) {
+      writeSession(GOOGLE_PENDING, "1");
+      await signInWithRedirect(auth, new GoogleAuthProvider());
+      return;
+    }
     // Errors from this first step are Rust/Tauri errors (e.g. "Google
     // sign-in was cancelled.") - plain, already human-readable strings with
     // no Firebase `.code`, deliberately left to propagate as-is rather than
     // wrapped. Welcome.tsx's catch block checks for `.code` to decide which
     // formatter (firebaseAuthErrorMessage vs errMsg) a given error needs.
-    const { idToken } = await api.startFirebaseGoogleSignIn();
-    const credential = GoogleAuthProvider.credential(idToken);
-    const cred = await signInWithCredential(auth, credential);
-    // Belt-and-suspenders, same reasoning as register() above: Firebase
-    // normally fires onAuthStateChanged on its own right after this
-    // resolves, but setting eagerly here means the UI never has to wait on
-    // that round trip to show the right name.
-    setUser(toAuthUser(cred.user));
-    // 2.0.71: a first-ever Google sign-in is also a brand-new account - same
-    // gate as register() above. getAdditionalUserInfo is the modular SDK's
-    // own way to tell "just created" apart from "signed in before", no
-    // extra network round trip needed to know which one this is.
-    if (getAdditionalUserInfo(cred)?.isNewUser) {
-      try {
-        await setDoc(doc(db, "users", cred.user.uid), {
-          name: toAuthUser(cred.user).name,
-          email: cred.user.email ?? "",
-          approved: false,
-          createdAt: serverTimestamp(),
-        });
-      } catch {
-        // see register()'s own comment on why this is swallowed on purpose
-      }
-      setApproved(false);
-    setIsAdmin(false);
-    } else {
-      const { approved: isApproved, admin } = await fetchApproved(cred.user);
-      setApproved(isApproved);
-      setIsAdmin(admin);
-      if (isApproved) await switchDatabaseFor(cred.user);
-    }
-  }, [switchDatabaseFor]);
+    // 2.117.0: a browser over plain http signs in in Firebase's own window.
+    const cred = IS_WEB
+      ? await signInWithPopup(auth, new GoogleAuthProvider())
+      : await signInWithCredential(auth, GoogleAuthProvider.credential((await api.startFirebaseGoogleSignIn()).idToken));
+    await afterGoogle(cred);
+  }, [afterGoogle]);
+
+  // 2.117.0: back from Google's page. Firebase signs the account in by itself
+  // (onAuthStateChanged above); this is for the first-time steps and for a
+  // refusal. Only after a sign-in left from here - otherwise every page load
+  // would fetch Firebase's sign-in frame for nothing.
+  const [signInError, setSignInError] = useState<unknown>(null);
+  useEffect(() => {
+    if (!SIGN_IN_ON_THIS_SITE || readSession(GOOGLE_PENDING) === null) return;
+    removeSession(GOOGLE_PENDING);
+    getRedirectResult(auth)
+      .then((cred) => (cred ? afterGoogle(cred) : undefined))
+      .catch(setSignInError);
+  }, [afterGoogle]);
 
   const logout = useCallback(async () => {
     await signOut(auth);
@@ -338,6 +406,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       register,
       loginWithGoogle,
+      signInError,
       logout,
       updateName,
       requestPasswordReset,
@@ -354,6 +423,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       register,
       loginWithGoogle,
+      signInError,
       logout,
       updateName,
       requestPasswordReset,

@@ -698,15 +698,16 @@ export function PageHeader({
     // (components/Tour.tsx), which is how one edit here gives every page in
     // the app a place for the tour to point at instead of a dozen page edits.
     // No behaviour, no styling, no prop.
-    <div data-tour="page-header" className="mb-5 pb-4">
+    // 2.117.0: tighter on a phone, where the line under the title is left out.
+    <div data-tour="page-header" className="mb-3 pb-2 sm:mb-5 sm:pb-4">
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <div className="min-w-0">
           <h1 className="truncate text-[19px] font-semibold leading-tight text-slate-900 dark:text-slate-50">
             {title}
           </h1>
-          {subtitle && <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>}
+          {subtitle && <p className="mt-1 hidden text-sm text-slate-500 dark:text-slate-400 sm:block">{subtitle}</p>}
         </div>
-        {actions && <div data-tour="page-actions" className="flex flex-wrap items-center gap-2">{actions}</div>}
+        {actions && <div data-tour="page-actions" className="page-actions flex flex-wrap items-center gap-2">{actions}</div>}
       </div>
     </div>
   );
@@ -1481,7 +1482,7 @@ export function Modal({
     // the header no longer scrolls away with the content.
     <div
       data-dialog-id={idRef.current}
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 pt-[8vh] backdrop-blur-[2px] animate-[fadein_.15s_ease-out] dark:bg-[#05030c]/70"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-2 pt-[3vh] backdrop-blur-[2px] animate-[fadein_.15s_ease-out] dark:bg-[#05030c]/70 sm:p-4 sm:pt-[8vh]"
     >
       <div
         role="dialog"
@@ -1501,7 +1502,7 @@ export function Modal({
         </div>
         {/* 2.41.0: one column. The split-preview branch and its `preview`
             prop are gone with PreviewPanel - see the Orders/Events forms. */}
-        <div className="max-h-[75vh] overflow-y-auto px-5 py-4">{children}</div>
+        <div className="max-h-[85vh] overflow-y-auto px-4 py-4 sm:max-h-[75vh] sm:px-5">{children}</div>
       </div>
     </div>
   );

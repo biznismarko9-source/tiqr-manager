@@ -92,5 +92,41 @@ fn main() {
     // ntfy's public server needs no application-level credential at all, so
     // there is nothing left to embed here for notifications any more.
 
+    // 2.117.0: the web version of the screens (`npm run build:web` ->
+    // ../dist-web), embedded so Web access (web_access.rs) serves exactly the
+    // screens of the build it ships in. A plain `cargo build`/`cargo test`
+    // without them gets an empty table, and Web access says the screens are
+    // missing instead of serving a blank page. The folder is created empty
+    // when absent: a path that does not exist would make Cargo run this
+    // script again on every build.
+    let web_dir = Path::new(&env::var("CARGO_MANIFEST_DIR").expect("set by Cargo")).join("../dist-web");
+    let _ = fs::create_dir_all(&web_dir);
+    let mut files = Vec::new();
+    collect_files(&web_dir, &web_dir, &mut files);
+    files.sort();
+    let mut table = String::from("pub(crate) static WEB_ASSETS: &[(&str, &[u8])] = &[\n");
+    for (name, full) in &files {
+        table.push_str(&format!("    ({name:?}, include_bytes!({full:?})),\n"));
+    }
+    table.push_str("];\n");
+    fs::write(Path::new(&out_dir).join("web_assets.rs"), table).expect("failed to write the web screens table");
+    println!("cargo:rerun-if-changed=../dist-web");
+
     tauri_build::build()
+}
+
+/// Every file under `dir`, as (path relative to `root` with `/`, absolute path).
+fn collect_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(root, &path, out);
+        } else if let Ok(rel) = path.strip_prefix(root) {
+            let name = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+            // Not canonicalized: on Windows that adds a \\?\ prefix, and
+            // the joined path is absolute already.
+            out.push((name, path.to_string_lossy().into_owned()));
+        }
+    }
 }

@@ -16,6 +16,58 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.117.0 - TIQR v prehliadači a v mobile
+
+**TIQR na serveri slúži aj prehliadaču**, iPhonu tiež
+(`src-tauri/src/web_access.rs`). Zapína sa v Settings -> Integrations ->
+Web access, len na počítači, ktorý stále beží. Cez Cloudflare Tunnel je to
+`https://app.tiqr.site`. Postup je v `WEB-A-MOBIL.txt` v zipe a v reporte.
+- Server počúva len na 127.0.0.1. Každá požiadavka nesie Firebase ID token,
+  ktorý sa overí Google kľúčmi, a musí patriť účtu, ktorý má TIQR na serveri
+  otvorený. Príkaz ide do toho istého spracovania ako klik v okne.
+- Na webe zámerne nejde to, čo patrí počítaču: súbory (CSV, zálohy,
+  prílohy), okná (kontrola cien, pripojenie Gmailu, Sheets) a vlastná práca
+  okna na serveri (živá synchronizácia, čítanie mailu). TIQR to povie vetou.
+- Prihlásenie cez Google ostáva na `app.tiqr.site`: TIQR na serveri podáva
+  prihlasovacie stránky Firebase (`/__/auth/`) ďalej, bez cookies. Inak by
+  Safari a ikona na ploche iPhonu prihlásenie stratili.
+- Webová verzia je tá istá appka (`npm run build:web`), zabudovaná do TIQR.
+  Má ikonu a manifest pre „Pridať na plochu“.
+
+**Rozloženie pre mobil** (pod 768 px, počítač ho nikdy nevidí): dolná lišta
+namiesto bočného panela, filtre a široké tabuľky sa posúvajú do strany,
+tlačidlá v hlavičke sa zalomia. Mail a Poznámky ukazujú jeden panel naraz,
+otvorená správa ide cez celú obrazovku. Hlásenia sú nad dolnou lištou.
+
+Obsahuje aj 2.116.1 (odstránenie obrázkov udalostí, migrácia 048), ktorá
+ešte nebola vydaná. 2.117.0 sama migráciu nepridáva, ďalšia je 049.
+
+## 2.116.1 - Bez obrázkov udalostí
+
+**Obrázky udalostí sú úplne preč**, na želanie. Už nie sú v Events, na stránke
+udalosti, v Inventory, v objednávke, v Sales, v predaji ani na Dashboarde.
+Zmizol aj výber obrázka pri novej udalosti a pri úprave, prepínač v
+Settings -> Integrations a hľadanie na pozadí. TIQR sa už na nič nepýta
+Deezeru ani Wikipedie.
+- Migrácia 048 zmaže všetko, čo obrázky uložili. Tabuľku automatických
+  nálezov (`artwork_lookups`) zruší a ručné voľby (`event_artworks`)
+  vymaže. Udalosti, objednávky, lístky a predaje ostanú presne také, aké boli.
+- `event_artworks` ostáva ako prázdna tabuľka. Počítač, ktorý má ešte
+  2.116.0, by bez nej nezlúčil zálohu z Drive. Obrázky, ktoré od neho ešte
+  prídu cez živú synchronizáciu, sa ticho zahodia a nehlásia sa ako konflikty.
+- Všetko zo stability z 2.116.0 ostáva: ochrana obrazoviek, poznámka po páde,
+  log, diagnostický report aj opravy.
+
+**Šípka na ikone na ploche.** Nie je v logu TIQR, Windows ju kreslí na každú
+skratku. V zipe je priečinok `SIPKY-NA-PLOCHE`:
+- `SKRYT-SIPKY.bat` šípku skryje pre všetky skratky v počítači (potrebuje
+  práva správcu a reštart).
+- `VRATIT-SIPKY.bat` ju vráti.
+
+Do repozitára tieto súbory nejdú.
+
+`cargo test` 1609 prešlo (4 ignorované, ako doteraz), `npm test` 57, build v poriadku.
+
 ## 2.116.0 - Obrázok pre každú udalosť, a aplikácia, ktorá padá bezpečne
 
 **Obrázky udalostí.** Udalosť má obrázok interpreta alebo tímu: v zozname

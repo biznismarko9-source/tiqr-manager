@@ -21,7 +21,7 @@ export interface DiagnosticEntry {
   id: string;
   at: string;
   severity: Severity;
-  /** What was being done: "artwork map", "page Events", "unhandled". */
+  /** What was being done: "sales list", "page Events", "unhandled". */
   where: string;
   message: string;
   /** The same failure again, folded into one entry instead of a flood. */

@@ -1,6 +1,16 @@
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
+import { IS_WEB } from "./platform";
+
+// 2.117.0: TIQR in a browser at its own https address (app.tiqr.site) signs
+// in with Google on that same address - TIQR on the server passes Firebase's
+// sign-in pages (/__/auth/) through (src-tauri/src/web_access.rs). Coming
+// back from firebaseapp.com instead, Safari - and an iPhone's home-screen
+// app above all - would keep the sign-in on the other site's side. Not over
+// plain http (TIQR opened on the server by 127.0.0.1): Google hands back to
+// https addresses only, so that stays on firebaseapp.com.
+export const SIGN_IN_ON_THIS_SITE = IS_WEB && window.location.protocol === "https:";
 
 // 2.0.45: marko's own real Firebase project ("tiqr-manager-b890a"), pasted
 // from Firebase Console -> Project settings -> Your apps -> Web app.
@@ -19,7 +29,7 @@ import { getFirestore } from "firebase/firestore";
 // research trail, same discipline as 2.0.42's Sheets-locale research).
 const firebaseConfig = {
   apiKey: "AIzaSyBZZKkmIW4EOVYMp6pSpmVFbEY7a98d5OA",
-  authDomain: "tiqr-manager-b890a.firebaseapp.com",
+  authDomain: SIGN_IN_ON_THIS_SITE ? window.location.host : "tiqr-manager-b890a.firebaseapp.com",
   projectId: "tiqr-manager-b890a",
   storageBucket: "tiqr-manager-b890a.firebasestorage.app",
   messagingSenderId: "251875496438",

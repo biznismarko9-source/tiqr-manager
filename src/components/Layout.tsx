@@ -10,6 +10,7 @@ import {
   IconClipboard,
   IconLayoutGrid,
   IconLogOut,
+  IconMenu,
   IconMoon,
   IconPackage,
   IconReceipt,
@@ -37,12 +38,12 @@ import {
 } from "../lib/liveSync";
 import { phaseLabel, phaseTone } from "../lib/liveSyncCore";
 import { closeMailShare, startMailShare } from "../lib/mailShare";
-import { startArtworkSearch, stopArtworkSearch } from "../lib/eventArtwork";
 import { useToast } from "../lib/toast";
 import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { IS_WEB } from "../lib/platform";
 import type { MailSyncResult, ScanRunFinishedPayload } from "../lib/types";
 import { Tour } from "./Tour";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -199,6 +200,8 @@ export default function Layout() {
   // what reaches him when TIQR is behind another window. This one is for when
   // he is looking at the app.
   useEffect(() => {
+    // 2.117.0: the scanner runs only in TIQR on a computer.
+    if (IS_WEB) return;
     let dispose: (() => void) | undefined;
     let disposed = false;
     listen<ScanRunFinishedPayload>("price-scanner-run-finished", (event) => {
@@ -241,12 +244,12 @@ export default function Layout() {
     const uid = auth.currentUser?.uid;
     if (!uid) return;
     const off = onLiveSync(setLive);
-    const stop = startLiveSync(uid);
+    // 2.117.0: in a browser, TIQR on the server is the computer - its own
+    // window there runs live sync and the mail sharing, never a browser tab.
+    const stop = IS_WEB ? () => undefined : startLiveSync(uid);
     // 2.115.0: beside it, in the same Firestore space - while both computers
     // run, one reads Gmail and sends the other the mail.
-    const stopShare = startMailShare(uid);
-    // 2.116.0: pictures for events that have none, a few at a time.
-    startArtworkSearch();
+    const stopShare = IS_WEB ? () => undefined : startMailShare(uid);
     api
       .liveSyncStatus()
       .then((s) => {
@@ -258,7 +261,6 @@ export default function Layout() {
       off();
       stop();
       stopShare();
-      stopArtworkSearch();
     };
   }, [user?.email]);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -414,6 +416,8 @@ export default function Layout() {
     // once. Failures stay silent here (offline is normal for this app); the
     // only place a check failure is ever surfaced is Settings, where the user
     // asked for it.
+    // 2.117.0: TIQR on the server is updated there; its screens come with it.
+    if (IS_WEB) return;
     const runCheck = () => {
       checkForUpdate()
         .then((update) => {
@@ -443,6 +447,8 @@ export default function Layout() {
   //   same rule for the same reason: it only adds rows, but they still land
   //   underneath whatever is already on screen, so it reloads the page.
   useEffect(() => {
+    // 2.117.0: TIQR's window on the server keeps its own Drive copy.
+    if (IS_WEB) return;
     let cancelled = false;
     // Is marko in the middle of something a reload would destroy? A merge only
     // ADDS rows, so the database is never the risk - the page reload that
@@ -631,6 +637,8 @@ export default function Layout() {
   // database under an app that is halfway shut down, and there is nobody
   // watching to be told about it.
   useEffect(() => {
+    // 2.117.0: closing a browser tab closes nothing on the server.
+    if (IS_WEB) return;
     let unlisten: (() => void) | null = null;
     let closing = false;
     void (async () => {
@@ -699,6 +707,8 @@ export default function Layout() {
   // never interrupt the app with an error toast (the "Send test" buttons in
   // Settings are where a real failure IS shown, on purpose).
   useEffect(() => {
+    // 2.117.0: TIQR's window on the server sends them, once.
+    if (IS_WEB) return;
     const check = () => {
       api.checkAndSendNotifications().catch(quietly("Layout: checkAndSendNotifications"));
     };
@@ -733,7 +743,10 @@ export default function Layout() {
         else unlisten = un;
       })
       .catch(quietly("Layout: listen for mail sync"));
-    api.startMailReader().catch(quietly("Layout: startMailReader"));
+    // 2.117.0: a browser hears each run and can ask for one (Sync); starting
+    // and holding the reader stay with TIQR's window on the server - a tab
+    // being closed must not pause it.
+    if (!IS_WEB) api.startMailReader().catch(quietly("Layout: startMailReader"));
     const off = onMailSyncRequested(() => {
       api.wakeMailReader().catch(quietly("Layout: wakeMailReader"));
     });
@@ -741,7 +754,7 @@ export default function Layout() {
       stopped = true;
       off();
       unlisten?.();
-      api.holdMailReader().catch(quietly("Layout: holdMailReader"));
+      if (!IS_WEB) api.holdMailReader().catch(quietly("Layout: holdMailReader"));
     };
   }, []);
 
@@ -755,8 +768,10 @@ export default function Layout() {
           size, not by taking width back off the tables. */}
       {/* 2.115.0: 176px, or 56px folded to its icons (marko: "kus stiahnut
           nech je mensia"). */}
+      {/* 2.117.0: on a phone the rail gives way to the tab bar at the
+          bottom (PhoneNav below). */}
       <aside
-        className={`flex ${folded ? "w-14" : "w-44"} shrink-0 flex-col border-r border-line bg-surface-sunken transition-[width] duration-150`}
+        className={`hidden md:flex ${folded ? "w-14" : "w-44"} shrink-0 flex-col border-r border-line bg-surface-sunken transition-[width] duration-150`}
       >
         {/* Brand lockup. The hairline under it is what separates the app's
             identity from its navigation - the same "one quiet rule per
@@ -941,7 +956,7 @@ export default function Layout() {
         {liveOffer && live.phase === "off" && (
           // 2.112.0: asked once. Records only leave this computer when he
           // says so - and both computers have to say it.
-          <div className="flex flex-wrap items-center gap-2 border-b border-brand-200 bg-brand-50 px-7 py-2 text-xs text-brand-900 dark:border-brand-500/25 dark:bg-brand-500/10 dark:text-brand-200">
+          <div className="flex flex-wrap items-center gap-2 border-b border-brand-200 bg-brand-50 px-4 py-2 text-xs md:px-7 text-brand-900 dark:border-brand-500/25 dark:bg-brand-500/10 dark:text-brand-200">
             <span>
               <strong className="font-semibold">Live sync between your computers.</strong> Every change shows up on your
               other computer within seconds, through your TIQR account. Turn it on on both computers.
@@ -982,7 +997,7 @@ export default function Layout() {
           </div>
         )}
         {crashNote && (
-          <div className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-7 py-2 text-xs text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300">
+          <div className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs md:px-7 text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300">
             <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />
             <span className="min-w-0 flex-1">
               <strong className="font-semibold">TIQR closed unexpectedly last time.</strong> What was saved before it is
@@ -1005,7 +1020,7 @@ export default function Layout() {
           </div>
         )}
         {livePaused && live.phase === "off" && (
-          <div className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-7 py-2 text-xs text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300">
+          <div className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs md:px-7 text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300">
             <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />
             <span>
               <strong className="font-semibold">Live sync is paused on this computer</strong> - its data was just
@@ -1037,7 +1052,7 @@ export default function Layout() {
           </div>
         )}
         {syncFailure && (
-          <div className="flex flex-wrap items-center gap-2 border-b border-red-200 bg-red-50 px-7 py-2 text-xs text-red-800 dark:border-red-500/25 dark:bg-red-500/10 dark:text-red-300">
+          <div className="flex flex-wrap items-center gap-2 border-b border-red-200 bg-red-50 px-4 py-2 text-xs md:px-7 text-red-800 dark:border-red-500/25 dark:bg-red-500/10 dark:text-red-300">
             <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />
             <span>
               <strong className="font-semibold">Automatic sync failed.</strong> {syncFailure}
@@ -1084,7 +1099,7 @@ export default function Layout() {
           </div>
         )}
         {syncNotice && (
-          <div className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-7 py-2 text-xs text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300">
+          <div className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs md:px-7 text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300">
             <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />
             {syncNotice}
             <Link to="/settings/data" className="font-semibold underline underline-offset-2">
@@ -1099,7 +1114,9 @@ export default function Layout() {
             </button>
           </div>
         )}
-        <div className="px-7 py-5">
+        {/* 2.117.0: narrower edges on a phone, and room under the page for
+            the tab bar and the iPhone's home bar. */}
+        <div className="px-3 pb-[calc(5.5rem+env(safe-area-inset-bottom))] pt-4 md:px-7 md:py-5">
           {/* 2.116.0: a screen that fails, fails alone - the sidebar and
               everything else stay (components/ErrorBoundary.tsx). */}
           <ErrorBoundary area={`page ${location.pathname}`} resetKey={location.pathname}>
@@ -1107,6 +1124,17 @@ export default function Layout() {
           </ErrorBoundary>
         </div>
       </main>
+      <PhoneNav
+        isDark={isDark}
+        onTheme={() => setThemeMode(isDark ? "light" : "dark")}
+        onLogout={async () => {
+          try {
+            await logout();
+          } catch {
+            toast.error("Couldn't log out - try again.");
+          }
+        }}
+      />
       <SyncActivity activity={syncActivity} />
       {/* 2.68.0: the question automatic sync never asked. Only Pull and Merge
           reach it - Push is still silent, because sending can't lose anything
@@ -1196,6 +1224,77 @@ export default function Layout() {
  * restart or a reload: there is nothing useful to click, and a restart that
  * arrives with no warning reads as a crash.
  */
+/** 2.117.0: on a phone (TIQR in a browser, Web access) the rail becomes a
+ *  tab bar at the bottom - the four screens used most, and More for the rest
+ *  of the rail, Settings, the theme and logging out. */
+const PHONE_TABS = NAV_GROUPS[0].slice(0, 4);
+const PHONE_MORE = NAV_GROUPS.flat().filter((item) => !PHONE_TABS.includes(item));
+
+function PhoneNav({ isDark, onTheme, onLogout }: { isDark: boolean; onTheme: () => void; onLogout: () => void }) {
+  const [open, setOpen] = useState(false);
+  const location = useLocation();
+  useEffect(() => setOpen(false), [location.pathname]);
+  const moreActive = PHONE_MORE.some((item) => location.pathname.startsWith(item.to)) || location.pathname.startsWith("/settings");
+  const tab = (active: boolean) =>
+    `flex flex-1 flex-col items-center justify-center gap-0.5 py-1.5 text-[10.5px] font-medium transition ${
+      active ? "text-brand-600 dark:text-brand-400" : "text-slate-500 dark:text-slate-400"
+    }`;
+  const row =
+    "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium text-slate-700 transition active:bg-slate-100 dark:text-slate-200 dark:active:bg-slate-800";
+  return (
+    <div className="md:hidden">
+      {open && (
+        <div className="fixed inset-0 z-40 bg-slate-900/40 animate-[fadein_.15s_ease-out] dark:bg-[#05030c]/70" onClick={() => setOpen(false)}>
+          <div
+            className="absolute inset-x-0 bottom-0 rounded-t-2xl border-t border-line bg-surface p-2 pb-[calc(4.5rem+env(safe-area-inset-bottom))] shadow-overlay"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {PHONE_MORE.map((item) => (
+              <NavLink key={item.to} to={item.to} className={row}>
+                <item.icon className="h-5 w-5 shrink-0 text-slate-500 dark:text-slate-400" />
+                {item.label}
+              </NavLink>
+            ))}
+            <div className="my-1 border-t border-line" />
+            <NavLink to="/settings" className={row}>
+              <IconSettings className="h-5 w-5 shrink-0 text-slate-500 dark:text-slate-400" />
+              Settings
+            </NavLink>
+            <button type="button" onClick={onTheme} className={row}>
+              {isDark ? (
+                <IconMoon className="h-5 w-5 shrink-0 text-slate-500 dark:text-slate-400" />
+              ) : (
+                <IconSun className="h-5 w-5 shrink-0 text-slate-500 dark:text-slate-400" />
+              )}
+              {isDark ? "Dark mode" : "Light mode"}
+            </button>
+            <button type="button" onClick={onLogout} className={`${row} !text-red-600 dark:!text-red-400`}>
+              <IconLogOut className="h-5 w-5 shrink-0" />
+              Log out
+            </button>
+          </div>
+        </div>
+      )}
+      {/* data-phone-nav: lib/useFillHeight stops a screen's panes above it. */}
+      <nav
+        data-phone-nav
+        className="fixed inset-x-0 bottom-0 z-40 flex border-t border-line bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur"
+      >
+        {PHONE_TABS.map((item) => (
+          <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => tab(isActive && !open)}>
+            <item.icon className="h-[22px] w-[22px]" />
+            {item.label}
+          </NavLink>
+        ))}
+        <button type="button" onClick={() => setOpen(!open)} className={tab(open || moreActive)} aria-expanded={open}>
+          <IconMenu className="h-[22px] w-[22px]" />
+          More
+        </button>
+      </nav>
+    </div>
+  );
+}
+
 function SyncActivity({ activity }: { activity: { label: string; blocking: boolean } | null }) {
   if (!activity) return null;
   if (!activity.blocking) {
@@ -1207,7 +1306,8 @@ function SyncActivity({ activity }: { activity: { label: string; blocking: boole
         // sitting in the same corner underneath it - every toast hid the one
         // thing that was supposed to say the app is busy, which is the exact
         // opposite of what it is for.
-        className="pointer-events-none fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-slate-200 bg-surface/95 px-3.5 py-2 text-xs text-slate-600 shadow-card backdrop-blur dark:border-slate-700 dark:bg-[#0c0c10]/95 dark:text-slate-300"
+        // 2.117.0: on a phone, above the tab bar.
+        className="pointer-events-none fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-slate-200 bg-surface/95 px-3.5 py-2 text-xs text-slate-600 shadow-card backdrop-blur md:bottom-4 dark:border-slate-700 dark:bg-[#0c0c10]/95 dark:text-slate-300"
       >
         <Spinner className="h-3.5 w-3.5 text-brand-500" />
         {activity.label}...

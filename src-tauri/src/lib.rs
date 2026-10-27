@@ -13,6 +13,8 @@ mod models;
 mod money;
 // 2.113.0: credentials beside the database, never in it.
 mod secrets;
+// 2.117.0: this TIQR's screens in a browser (Settings -> Web access).
+mod web_access;
 
 use db::AppState;
 use std::collections::HashMap;
@@ -122,6 +124,8 @@ pub fn run() {
                 mail_oauth_cancel_flag: Mutex::new(None),
                 price_scanner_sessions: Mutex::new(HashMap::new()),
             });
+            // 2.117.0: back on if it was left on (web_access.rs).
+            web_access::start_if_enabled(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -137,14 +141,9 @@ pub fn run() {
             diag::take_crash_report,
             diag::export_diagnostics,
             diag::save_diagnostics,
-            // 2.116.0: a picture for every event.
-            commands::event_artwork::event_artwork_map,
-            commands::event_artwork::event_artwork_images,
-            commands::event_artwork::event_artwork_suggest,
-            commands::event_artwork::event_artwork_decide,
-            commands::event_artwork::event_artwork_backfill,
-            commands::event_artwork::get_event_artwork_options,
-            commands::event_artwork::set_event_artwork_options,
+            // 2.117.0: Web access - the Settings card on the computer that serves.
+            web_access::get_web_access_status,
+            web_access::set_web_access_options,
             // 2.7.0: AI Import Assistant. Read-only and database-free by
             // construction - see commands/ai_import.rs's module doc comment.
             commands::ai_import::analyze_import_image,

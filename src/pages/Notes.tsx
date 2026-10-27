@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, errMsg } from "../lib/api";
 import { useDataChanged } from "../lib/dataChanged";
 import type { Note, NotepadHit } from "../lib/types";
 import { Button, ConfirmDialog, EmptyState, Input, Modal, ModalFooter, TableSkeleton } from "../components/ui";
-import { IconChevronDown, IconChevronUp, IconPlus, IconSearch } from "../components/icons";
+import { IconChevronDown, IconChevronLeft, IconChevronUp, IconPlus, IconSearch } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { formatDateNumeric } from "../lib/format";
+import { useFillHeight } from "../lib/useFillHeight";
+import { usePhone } from "../lib/usePhone";
 import Editor from "./notes/Editor";
 import { LINK_KINDS } from "./notes/LinkPicker";
 import Menu, { menuAt } from "./notes/Menu";
@@ -110,6 +112,19 @@ export default function Notes() {
   const archived = useMemo(() => (notes ?? []).filter((n) => n.archived), [notes]);
   const shown = showArchived ? archived : live;
   const active = useMemo(() => (notes ?? []).find((n) => n.id === activeId) ?? null, [notes, activeId]);
+
+  /* 2.117.0: on a phone the list and the open note take turns - a note
+     opens when it is tapped (or made), not when the list loads, and the bar
+     above it goes back to the list. */
+  const phone = usePhone();
+  const [phoneOpen, setPhoneOpen] = useState(false);
+  const editing = phone && phoneOpen && active !== null;
+  const openNote = (id: number) => {
+    setActiveId(id);
+    setPhoneOpen(true);
+  };
+  const boxRef = useRef<HTMLDivElement>(null);
+  const boxHeight = useFillHeight(boxRef, 12, 360);
   const menuNote = useMemo(() => (notes ?? []).find((n) => n.id === menu?.id) ?? null, [notes, menu]);
 
   /** The chosen template only creates the sub-tabs, one call each. There is no
@@ -125,7 +140,7 @@ export default function Notes() {
         for (const name of pages.slice(1)) await api.createNotePage(created.id, name);
       }
       setShowArchived(false);
-      setActiveId(created.id);
+      openNote(created.id);
       await load();
     } catch (e) {
       toast.error(errMsg(e));
@@ -137,7 +152,7 @@ export default function Notes() {
     try {
       const copy = await api.duplicateNote(n.id, withLinks);
       setShowArchived(false);
-      setActiveId(copy.id);
+      openNote(copy.id);
       await load();
       toast.success(withLinks ? "Poznámka aj s priradeniami" : "Poznámka bez priradení");
     } catch (e) {
@@ -213,11 +228,14 @@ export default function Notes() {
 
   return (
     <div
-      className="flex min-h-[460px] gap-0 overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800"
-      style={{ height: "calc(100vh - 150px)" }}
+      ref={boxRef}
+      className="flex min-h-[360px] gap-0 overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800 md:min-h-[460px]"
+      style={{ height: phone && boxHeight ? `${boxHeight}px` : "calc(100vh - 150px)" }}
     >
       {/* ── list ──────────────────────────────────────────────────────── */}
-      <aside className="flex w-[300px] shrink-0 flex-col border-r border-slate-200 bg-surface-sunken dark:border-slate-800">
+      <aside
+        className={`${phone ? (editing ? "hidden" : "flex w-full") : "flex w-[300px]"} shrink-0 flex-col border-r border-slate-200 bg-surface-sunken dark:border-slate-800`}
+      >
         <div className="flex items-center gap-2 px-4 pb-2 pt-3.5">
           <h1 className="text-[16px] font-semibold text-slate-900 dark:text-slate-50">Poznámky</h1>
           <button
@@ -259,7 +277,7 @@ export default function Notes() {
                   type="button"
                   onClick={() => {
                     setQuery("");
-                    setActiveId(h.noteId);
+                    openNote(h.noteId);
                   }}
                   className="mb-0.5 block w-full rounded-lg px-3 py-2 text-left transition hover:bg-surface"
                 >
@@ -297,9 +315,9 @@ export default function Notes() {
                   if (!raw.startsWith("note:")) return;
                   void dropNote(Number(raw.slice(5)), n);
                 }}
-                onClick={() => setActiveId(n.id)}
+                onClick={() => openNote(n.id)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") setActiveId(n.id);
+                  if (e.key === "Enter") openNote(n.id);
                 }}
                 className={`group relative mb-0.5 cursor-pointer rounded-lg px-3 py-2.5 transition ${
                   n.id === activeId
@@ -414,11 +432,25 @@ export default function Notes() {
       </aside>
 
       {/* ── editor ───────────────────────────────────────────────────── */}
-      <section className="min-w-0 flex-1 bg-surface">
+      <section className={`min-w-0 flex-1 bg-surface ${phone ? (editing ? "flex flex-col" : "hidden") : ""}`}>
         {notes === null ? (
           <div className="p-5">
             <TableSkeleton />
           </div>
+        ) : active && editing ? (
+          <>
+            <button
+              type="button"
+              onClick={() => setPhoneOpen(false)}
+              className="flex shrink-0 items-center gap-1 border-b border-slate-200 px-3 py-2.5 text-left text-sm font-medium text-brand-600 dark:border-slate-800 dark:text-brand-400"
+            >
+              <IconChevronLeft className="h-4 w-4" />
+              Poznámky
+            </button>
+            <div className="min-h-0 flex-1">
+              <Editor key={active.id} note={active} onNoteChanged={() => void load()} />
+            </div>
+          </>
         ) : active ? (
           <Editor key={active.id} note={active} onNoteChanged={() => void load()} />
         ) : (

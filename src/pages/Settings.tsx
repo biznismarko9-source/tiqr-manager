@@ -5,7 +5,6 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { api, errMsg } from "../lib/api";
-import { nudgeArtworkSearch } from "../lib/eventArtwork";
 import { copyText } from "../lib/clipboard";
 import {
   type CloudSyncStatus,
@@ -34,6 +33,7 @@ import {
   type DiscordDestination,
   type DiscordEmbed,
   type DiscordTestResult,
+  type WebAccessStatus,
 } from "../lib/types";
 import { DiscordEmbedPreview, DiscordRowSection, rememberDiscordStatus } from "../components/Discord";
 import { formatDateTime } from "../lib/format";
@@ -93,6 +93,7 @@ import { UpdateOverlay } from "../components/UpdateOverlay";
 import { useAuth } from "../lib/auth";
 import { firebaseAuthErrorMessage } from "../lib/firebaseErrors";
 import { quietly } from "../lib/diagnostics";
+import { IS_WEB } from "../lib/platform";
 
 // 1.8.2: Settings Home - one card per category, each a real route
 // (settings/:section, added in App.tsx) rather than a scroll-to-anchor, so
@@ -1846,18 +1847,18 @@ export default function Settings() {
                 <AnthropicApiKeyCard />
               </SettingsGroup>
 
-              {/* 2.116.0: pictures for events (commands/event_artwork.rs) -
-                  two free services, no key, and the switch is per computer. */}
-              <SettingsGroup title="Event pictures" hint="Free. A picture for every event, from Deezer and Wikipedia.">
-                <EventPicturesCard />
-              </SettingsGroup>
-
               {/* 2.99.0: its own group - it is a separate service with its
                   own credentials, not part of the Google block or the key
                   above. See DiscordCard's own comment for why its settings
                   are stored with Notifications. */}
               <SettingsGroup title="Discord" hint="Optional. Post alerts into Discord channels.">
                 <DiscordCard />
+              </SettingsGroup>
+
+              {/* 2.117.0: this TIQR's screens in a browser - on for the
+                  computer that stays on (the server), off everywhere else. */}
+              <SettingsGroup title="Web access" hint="Optional. Use TIQR in a browser, your iPhone too, through this computer.">
+                <WebAccessCard />
               </SettingsGroup>
 
               {/* 2.109.0: MOVED. marko: "tie nastavenia ktore si dal do
@@ -2607,53 +2608,114 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
 // Console's own Billing page. Same "never fabricate what can't be reliably
 // computed" rule this app already follows elsewhere (see PROTECTED_AREAS.md
 // 2.2.8's own attention-center categories).
-/** 2.116.0: the one switch for event pictures, and what it means. */
-function EventPicturesCard() {
+/** 2.117.0: Web access (src-tauri/src/web_access.rs). Switched on in TIQR on
+ *  the server only; a browser using it sees where it comes from. */
+function WebAccessCard() {
   const toast = useToast();
-  const [auto, setAuto] = useState<boolean | null>(null);
+  const [status, setStatus] = useState<WebAccessStatus | null>(null);
+  const [port, setPort] = useState("");
   const [saving, setSaving] = useState(false);
+
   useEffect(() => {
     api
-      .getEventArtworkOptions()
-      .then((o) => setAuto(o.auto))
+      .getWebAccessStatus()
+      .then((s) => {
+        setStatus(s);
+        setPort(String(s.port));
+      })
       .catch((e) => toast.error(errMsg(e)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const flip = async (on: boolean) => {
+
+  const apply = async (enabled: boolean) => {
+    const wanted = Number(port);
+    if (!Number.isInteger(wanted) || wanted < 1024 || wanted > 65535) {
+      toast.error("Choose a port from 1024 to 65535.");
+      return;
+    }
     setSaving(true);
     try {
-      const o = await api.setEventArtworkOptions({ auto: on });
-      setAuto(o.auto);
-      if (o.auto) nudgeArtworkSearch();
+      const s = await api.setWebAccessOptions({ enabled, port: wanted });
+      setStatus(s);
+      if (s.error) toast.error(s.error);
+      else toast.success(enabled ? "Web access is on." : "Web access is off.");
     } catch (e) {
       toast.error(errMsg(e));
     } finally {
       setSaving(false);
     }
   };
+
+  if (IS_WEB) {
+    return (
+      <Card className="p-5">
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Web access</h3>
+        <p className="mt-1 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+          You are using TIQR on your server through Web access. It is switched on and off in TIQR on the server
+          itself.
+        </p>
+      </Card>
+    );
+  }
+
   return (
     <Card className="p-5">
       <label className="flex items-start gap-3">
         <input
           type="checkbox"
           className={CHECKBOX_CLASS}
-          checked={auto ?? false}
-          disabled={auto === null || saving}
-          onChange={(e) => void flip(e.target.checked)}
+          checked={status?.enabled ?? false}
+          disabled={!status || saving}
+          onChange={(e) => void apply(e.target.checked)}
         />
         <span>
           <span className="block text-sm font-medium text-slate-800 dark:text-slate-200">
-            Find pictures for events automatically
+            Serve TIQR to a browser from this computer
           </span>
-          <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
-            Looks for the artist's or the team's picture as an event is typed, and - a few at a time - for events
-            that have none. Only the event's name is sent, to Deezer (music) and Wikipedia (teams, competitions,
-            festivals, shows). A picture is used on its own only when TIQR is sure it is the right one; a likely
-            one waits for your yes on the event's page. Pictures chosen by hand show on your other computer too.
-            Off: nothing is looked for unless you press Search on an event.
+          <span className="mt-0.5 block text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+            Turn this on only on the computer that stays on - your server. TIQR then answers on this computer
+            alone, and Cloudflare Tunnel takes it to your address. Only the account signed in here can use it, and
+            files, windows and sign-ins to Google stay on this computer.
           </span>
         </span>
       </label>
+      {status && (
+        <div className="mt-4 space-y-2 text-xs text-slate-600 dark:text-slate-300">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="w-14 shrink-0 text-slate-500 dark:text-slate-400">Port</span>
+            <input
+              className="w-24 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900"
+              inputMode="numeric"
+              value={port}
+              onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))}
+            />
+            {status.enabled && String(status.port) !== port && (
+              <Button variant="secondary" disabled={saving} onClick={() => void apply(true)}>
+                Use this port
+              </Button>
+            )}
+          </div>
+          <p>
+            {status.error ? (
+              <span className="text-rose-600 dark:text-rose-400">{status.error}</span>
+            ) : status.running && status.address ? (
+              <>
+                Answering at <code className="font-mono">{status.address}</code> - point Cloudflare Tunnel here.
+              </>
+            ) : (
+              "Off."
+            )}
+          </p>
+          {status.enabled && !status.signedIn && (
+            <p className="text-amber-700 dark:text-amber-400">Sign in here first - until then nobody can use it.</p>
+          )}
+          {!status.screensIncluded && (
+            <p className="text-amber-700 dark:text-amber-400">
+              This build of TIQR has no web screens - install a release build to use Web access.
+            </p>
+          )}
+        </div>
+      )}
     </Card>
   );
 }
@@ -4796,26 +4858,6 @@ const GUIDE_ESSENTIALS = [
   },
 ];
 
-/** 2.23.0: Settings -> Support. Two things marko asked for, in one card each.
- *
- * The guide is written for someone opening TIQR for the first time, in the
- * order the app actually wants to be used - it is not a feature list, and it
- * names the three things that are genuinely surprising (money is entered as a
- * decimal but stored to the cent, an order creates its tickets for you, and
- * sync is automatic once switched on).
- *
- * The suggestion box writes one document to Firestore and reads nothing back.
- * The rules (firestore.rules) let anyone signed in POST one and let nobody but
- * an admin read the collection, so a user can never see another user's note -
- * or even their own after sending it. That is deliberate: this is a postbox,
- * not a forum, and pretending otherwise would invite a reply that never comes.
- *
- * TWO MANUAL STEPS make this live, and nothing in the app can do either:
- * publish the rules in the Firebase Console, and set `admin: true` on marko's
- * own users/{uid} doc. Until then, sending fails with a permission error and
- * the inbox stays hidden - the safe way round, and the error below says so in
- * plain words rather than showing a raw Firebase code.
- */
 /** 2.116.0: what went wrong, in a form that is safe to send - built by the
  *  backend (src-tauri/src/diag.rs): counts and states, the last log lines and
  *  crash notes, with names, e-mail addresses, keys and record contents left
@@ -4873,6 +4915,26 @@ function DiagnosticsCard() {
   );
 }
 
+/** 2.23.0: Settings -> Support. Two things marko asked for, in one card each.
+ *
+ * The guide is written for someone opening TIQR for the first time, in the
+ * order the app actually wants to be used - it is not a feature list, and it
+ * names the three things that are genuinely surprising (money is entered as a
+ * decimal but stored to the cent, an order creates its tickets for you, and
+ * sync is automatic once switched on).
+ *
+ * The suggestion box writes one document to Firestore and reads nothing back.
+ * The rules (firestore.rules) let anyone signed in POST one and let nobody but
+ * an admin read the collection, so a user can never see another user's note -
+ * or even their own after sending it. That is deliberate: this is a postbox,
+ * not a forum, and pretending otherwise would invite a reply that never comes.
+ *
+ * TWO MANUAL STEPS make this live, and nothing in the app can do either:
+ * publish the rules in the Firebase Console, and set `admin: true` on marko's
+ * own users/{uid} doc. Until then, sending fails with a permission error and
+ * the inbox stays hidden - the safe way round, and the error below says so in
+ * plain words rather than showing a raw Firebase code.
+ */
 function SupportCards() {
   const toast = useToast();
   const { user, isAdmin } = useAuth();

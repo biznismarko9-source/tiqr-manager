@@ -848,6 +848,59 @@
   background: transparent;
 }
 
+/* 2.117.0: on a phone (TIQR in a browser) a list's filters - the shared
+   `.toolbar` and the `.filter-bar` rows of Events and Inventory - stay one
+   row that scrolls sideways, instead of each taking a full line above the
+   list. The row's own order is kept; nothing is hidden. */
+@media (max-width: 767px) {
+  .toolbar,
+  .filter-bar {
+    /* relative: the screen-reader labels inside (.toolbar .label is
+       sr-only, absolutely placed) stay inside the scrolling row instead of
+       widening the page. */
+    position: relative;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .toolbar::-webkit-scrollbar,
+  .filter-bar::-webkit-scrollbar {
+    display: none;
+  }
+  .toolbar > *,
+  .filter-bar > * {
+    flex-shrink: 0;
+  }
+  /* A page's buttons go on to a second line rather than past the edge. Most
+     pages hand PageHeader their buttons in a row of their own. */
+  .page-actions > .flex {
+    flex-wrap: wrap;
+  }
+  /* List tables keep the column widths they were measured for on the
+     smallest desktop window (1080px, minus the rail and the page's margins)
+     and scroll sideways inside their card, instead of squeezing every column
+     to a few letters. */
+  .table-shell table.table-fixed {
+    min-width: 848px;
+  }
+  /* A card of figures: two to a row, every row starting at the card's edge
+     (one row divided by lines on a desktop), and an odd one out takes the
+     whole row. */
+  .figs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 14px;
+  }
+  .figs > .fig:nth-child(odd) {
+    padding-left: 0;
+    border-left: 0;
+  }
+  .figs > .fig:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
 /* Marko asked for light polish only, and the OS-level "reduce motion"
    setting has to win over all of it: every transition and every one of the
    keyframes above collapses to effectively instant, while still running so

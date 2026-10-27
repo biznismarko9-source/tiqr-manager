@@ -4,6 +4,7 @@ import { Button, Card, Field, Input, SEGMENTED_TRACK, segmentedItemClass, Spinne
 import { IconGoogle } from "../components/icons";
 import { api, errMsg } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { IS_WEB } from "../lib/platform";
 import { firebaseAuthErrorMessage } from "../lib/firebaseErrors";
 import { useToast } from "../lib/toast";
 import logo from "../assets/logo.png";
@@ -26,7 +27,7 @@ type Mode = "login" | "register" | "forgot";
 // leave it). See lib/auth.tsx's requestPasswordReset and
 // pages/ResetPassword.tsx for the rest of the flow this kicks off.
 export default function Welcome() {
-  const { user, loading, login, register, loginWithGoogle, requestPasswordReset } = useAuth();
+  const { user, loading, login, register, loginWithGoogle, signInError, requestPasswordReset } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
   const [mode, setMode] = useState<Mode>("login");
@@ -48,11 +49,24 @@ export default function Welcome() {
   const [googleBusy, setGoogleBusy] = useState(false);
 
   useEffect(() => {
+    // 2.117.0: in a browser Firebase signs in with Google itself, and nothing
+    // can be asked of TIQR on the server before anyone is signed in.
+    if (IS_WEB) {
+      setGoogleAvailable(true);
+      return;
+    }
     api
       .firebaseGoogleSignInAvailable()
       .then(setGoogleAvailable)
       .catch(() => setGoogleAvailable(false));
   }, []);
+
+  // 2.117.0: back from Google's page in a browser, refused.
+  useEffect(() => {
+    if (!signInError) return;
+    const hasFirebaseCode = typeof signInError === "object" && "code" in signInError;
+    toast.error(hasFirebaseCode ? firebaseAuthErrorMessage(signInError) : errMsg(signInError));
+  }, [signInError, toast]);
 
   // Still restoring a persisted Firebase session - see lib/auth.tsx's own
   // doc comment. Render nothing rather than flashing this form first.
@@ -209,24 +223,28 @@ export default function Welcome() {
                   the card's full width - the same track/thumb used by every
                   other two-way switch in the app rather than this screen's
                   own brand-fill variant. */}
-              <div className={`${SEGMENTED_TRACK} mb-4 w-full flex-nowrap`}>
-                <button
-                  type="button"
-                  onClick={() => setMode("login")}
-                  aria-pressed={mode === "login"}
-                  className={`${segmentedItemClass(mode === "login")} flex-1 text-sm`}
-                >
-                  Log in
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMode("register")}
-                  aria-pressed={mode === "register"}
-                  className={`${segmentedItemClass(mode === "register")} flex-1 text-sm`}
-                >
-                  Sign up
-                </button>
-              </div>
+              {/* 2.117.0: the web serves the account TIQR has open on the
+                  server - a new account is made in TIQR on a computer. */}
+              {!IS_WEB && (
+                <div className={`${SEGMENTED_TRACK} mb-4 w-full flex-nowrap`}>
+                  <button
+                    type="button"
+                    onClick={() => setMode("login")}
+                    aria-pressed={mode === "login"}
+                    className={`${segmentedItemClass(mode === "login")} flex-1 text-sm`}
+                  >
+                    Log in
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMode("register")}
+                    aria-pressed={mode === "register"}
+                    className={`${segmentedItemClass(mode === "register")} flex-1 text-sm`}
+                  >
+                    Sign up
+                  </button>
+                </div>
+              )}
 
               <form onSubmit={handleSubmit} className="space-y-3">
                 {mode === "register" && (
@@ -313,7 +331,11 @@ export default function Welcome() {
         </Card>
 
         <p className="mt-4 text-center text-[11px] text-slate-500 dark:text-slate-400">
-          Local-first &middot; your data stays on this device
+          {IS_WEB ? (
+            <>Your data stays in TIQR on your own server</>
+          ) : (
+            <>Local-first &middot; your data stays on this device</>
+          )}
         </p>
       </div>
     </div>

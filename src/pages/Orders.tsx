@@ -38,7 +38,6 @@ import { markRow, takeRow } from "../lib/lastRow";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import type { EventStatus, OrderRecord } from "../lib/types";
 import { completionStatus } from "../lib/completion";
-import { EventArt } from "../components/EventArt";
 import { quietly } from "../lib/diagnostics";
 
 // 2.0.66: the "Completed" indicator (see REDESIGN-2.0.66-REPORT.md). "Sold"
@@ -371,7 +370,7 @@ export default function Orders() {
           lists read the same way. Same inputs, same handlers, same widths,
           same wrap behaviour; the bar is only what groups them. The tab
           switcher stays pinned right. */}
-      <div className="mb-4 flex flex-wrap items-end gap-3 rounded-xl bg-surface-sunken px-3 py-2.5">
+      <div className="filter-bar mb-4 flex flex-wrap items-end gap-3 rounded-xl bg-surface-sunken px-3 py-2.5">
         <div className="w-64">
           <span className="label">Search</span>
           <div className="relative">
@@ -625,11 +624,7 @@ export default function Orders() {
                         round; falls back to this table's existing
                         overflow-x-auto scroll at the extreme minimum, same
                         as that comment already documents for Event alone. */}
-                    {/* 2.116.0: the event's picture - 28px reaching into
-                        the cell's padding, so this dense list keeps its
-                        row height. */}
                     <div className="flex items-center gap-1.5">
-                      <EventArt eventId={o.eventId} name={o.eventName} size="row" className="mr-0.5" />
                       <span className="truncate">{o.eventName}</span>
                       {o.categoryName && o.categoryColorSlot !== null && (
                         <span className="shrink-0">

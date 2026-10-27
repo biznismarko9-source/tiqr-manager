@@ -30,16 +30,6 @@ from old reports.
   until marko enables Pages (Settings -> Pages -> Deploy from a branch ->
   `main` / `/docs`). The Discord logo no longer depends on it.
 
-- **Event pictures (2.116.0): checked with fixtures only.** This build
-  environment cannot reach Deezer or Wikipedia, so the answers in the tests
-  are shaped after the services' documented responses, not recorded from
-  them. Every failure ends in the placeholder and a retry later, never in a
-  wrong picture - but the first real use is the real check of the search
-  and its confidence.
-- **Event pictures: a choice belongs to one event name.** "Coldplay - Prague"
-  and "Coldplay - Vienna" share the automatic picture and a picture chosen by
-  hand for "Coldplay", but "No picture" chosen for one name is not carried to
-  another, and renaming an event moves it to the new name's picture.
 - **A sheet sync that creates events asks the AI for their category while
   holding the database** (`orders_sheet_sync::resolve_or_create_event` ->
   `detect_category_for_event_name`), so the window can wait up to 20 s per
@@ -50,9 +40,11 @@ from old reports.
   its window appears.** Since 2.116.0 the reason is in `logs/tiqr.log` next
   to the data, but no screen says it. Starting on a stand-in database
   instead would risk work being typed into it and lost, so it was not done.
-- **Until both computers run 2.116.0**, live sync on the older one counts
-  each picture choice from the newer one as a conflict ("not a table this
-  version syncs"). Harmless; it stops with the update.
+- **Until both computers run 2.116.1**, the one still on 2.116.0 keeps
+  looking for and showing event pictures, and sends the ones chosen there by
+  hand. The updated one sets those aside (`live_sync::RETIRED_TABLES`), so
+  nothing is stored and no conflict is counted. It stops with the update,
+  whose migration 048 empties that computer's pictures too.
 
 - **Promotions cleanup and the new webhooks (2.114.0): checked with fakes
   only.** The AI sorting was not run against the real API here (no key in
@@ -168,6 +160,39 @@ from old reports.
   guess. Revisit if marko reports losing an edit after a crash.
 
 ## Documented limitations (not bugs, but worth remembering)
+
+- **Web access lives in the server's TIQR window** (2.117.0). Closed, not
+  signed in, or the server rebooted without signing in again: the tunnel
+  answers 502 and the phone says "TIQR on the server cannot be reached" (or
+  "not signed in yet"). The release guide (`WEB-A-MOBIL.txt`) sets up the
+  Startup folder and Autologon for reboots; TIQR itself has no autostart.
+
+- **A change made on the phone reaches the other computers within about a
+  minute, not seconds** (2.117.0). The phone writes straight into the
+  server's database, but the server's live sync loop runs on the window's
+  timers, and WebView2 slows the timers of a window nobody looks at (Tauri's
+  `backgroundThrottling` is not supported on Windows). What the other
+  computers send arrives at the server as fast as before (Firestore's
+  listener is not a timer).
+
+- **Not verifiable in the build environment, first checked on the real
+  server** (2.117.0): a real Firebase ID token through Wry on Windows (the
+  dispatch is covered by a MockRuntime end-to-end test), Firebase's real
+  `/__/auth/` pages through the pass-through (covered against a stand-in),
+  the redirect sign-in inside an iPhone home-screen app, and Cloudflare
+  Access inside one. If the Google sign-in fails on the phone, email and
+  password still work; if it fails only in the home-screen app, Safari
+  itself is the way.
+
+- **Google sign-in on the web needs two console settings** (2.117.0):
+  `app.tiqr.site` among Firebase's authorized domains, and
+  `https://app.tiqr.site/__/auth/handler` among the OAuth web client's
+  redirect URIs. Without them Google answers `redirect_uri_mismatch`.
+
+- **On the web, files and windows are refused on purpose** (2.117.0): CSV
+  export/import, backup/restore, attachments, the diagnostic report file,
+  the price checker, connecting Gmail, Google Sheets sign-in, and switching
+  Web access itself. Each says why, in a sentence.
 
 - **Mail is per computer, shared while both run (2.110.0; 2.115.0).** Each
   computer keeps its own mail file. Alone, it reads Gmail itself (since

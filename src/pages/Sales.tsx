@@ -47,7 +47,6 @@ import { markRow, takeRow } from "../lib/lastRow";
 import SaleRowsModal from "./SaleRowsModal";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import { completionStatus } from "../lib/completion";
-import { EventArt } from "../components/EventArt";
 import { quietly } from "../lib/diagnostics";
 
 // 2.0.66: the new "Completed" indicator (see REDESIGN-2.0.66-REPORT.md) -
@@ -920,10 +919,7 @@ export default function Sales() {
                     }
                   >
                     {g.eventId && g.eventName ? (
-                      // 2.116.0: the event's picture beside its two lines.
-                      <div className="flex items-center gap-2.5">
-                      <EventArt eventId={g.eventId} name={g.eventName} size="sm" className="-my-1" />
-                      <div className="min-w-0 flex-1">
+                      <div>
                         <div className="flex items-center gap-1.5">
                           <span className="truncate">{g.eventName}</span>
                           {g.categoryName && g.categoryColorSlot !== null && (
@@ -937,7 +933,6 @@ export default function Sales() {
                             {g.eventCity}
                           </span>
                         )}
-                      </div>
                       </div>
                     ) : (
                       <span className="italic text-slate-500 dark:text-slate-400">Mixed events</span>
